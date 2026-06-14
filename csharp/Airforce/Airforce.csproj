@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <PackageId>Airforce</PackageId>
+    <Version>0.0.1</Version>
+    <Authors>Airforce API</Authors>
+    <Description>Official C# SDK for the api.airforce AI gateway</Description>
+    <PackageProjectUrl>https://api.airforce</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ApiAirforce/api-airforce-sdk</RepositoryUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>airforce;ai;llm;openai;chat;sdk</PackageTags>
+  </PropertyGroup>
+
+</Project>

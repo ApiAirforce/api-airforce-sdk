@@ -1,0 +1,16 @@
+name: airforce
+description: Official Dart SDK for the api.airforce AI gateway — an OpenAI-compatible AI API.
+version: 0.0.1
+homepage: https://api.airforce
+repository: https://github.com/ApiAirforce/api-airforce-sdk
+
+environment:
+  sdk: ^3.0.0
+
+dependencies:
+  http: ^1.2.0
+  crypto: ^3.0.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^4.0.0

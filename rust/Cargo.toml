@@ -1,0 +1,27 @@
+[package]
+name = "airforce"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+description = "Official Rust SDK for the api.airforce AI gateway"
+repository = "https://github.com/ApiAirforce/api-airforce-sdk"
+homepage = "https://api.airforce"
+keywords = ["airforce", "ai", "llm", "openai", "sdk"]
+categories = ["api-bindings"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+async-stream = "0.3"
+thiserror = "1"
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+wiremock = "0.6"

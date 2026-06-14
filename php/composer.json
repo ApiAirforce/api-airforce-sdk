@@ -1,0 +1,21 @@
+{
+  "name": "api-airforce/sdk",
+  "description": "Official PHP SDK for the api.airforce AI gateway",
+  "type": "library",
+  "license": "MIT",
+  "homepage": "https://api.airforce",
+  "keywords": ["airforce", "ai", "llm", "openai", "chat", "sdk"],
+  "require": {
+    "php": ">=8.1",
+    "ext-json": "*",
+    "ext-curl": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Airforce\\": "src/"
+    }
+  },
+  "config": {
+    "sort-packages": true
+  }
+}

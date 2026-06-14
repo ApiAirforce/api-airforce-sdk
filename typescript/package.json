@@ -1,0 +1,58 @@
+{
+  "name": "@api-airforce/sdk",
+  "version": "0.0.1",
+  "description": "Official TypeScript/JavaScript SDK for the api.airforce AI gateway",
+  "keywords": [
+    "airforce",
+    "api.airforce",
+    "ai",
+    "llm",
+    "openai",
+    "chat",
+    "sdk"
+  ],
+  "homepage": "https://api.airforce",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ApiAirforce/api-airforce-sdk.git",
+    "directory": "typescript"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
