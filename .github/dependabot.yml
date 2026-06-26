@@ -1,6 +1,6 @@
-# Dependabot version updates for the polyglot SDK repo — one ecosystem per
-# language subdir (csharp has no top-level manifest, so it is omitted).
-# Security alerts/fixes live in repo settings; this drives grouped weekly PRs.
+# Dependabot version updates for the polyglot SDK (one ecosystem per language
+# subdir; csharp omitted, no top-level manifest). Library semver-major bumps
+# are filtered (handled manually); routine minor/patch land grouped weekly.
 version: 2
 updates:
   - package-ecosystem: "npm"
@@ -10,6 +10,9 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "pub"
     directory: "/dart"
     schedule: { interval: "weekly" }
@@ -17,6 +20,9 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "gomod"
     directory: "/go"
     schedule: { interval: "weekly" }
@@ -24,6 +30,9 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "maven"
     directory: "/java"
     schedule: { interval: "weekly" }
@@ -31,6 +40,9 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "composer"
     directory: "/php"
     schedule: { interval: "weekly" }
@@ -38,6 +50,9 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "pip"
     directory: "/python"
     schedule: { interval: "weekly" }
@@ -45,6 +60,9 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "cargo"
     directory: "/rust"
     schedule: { interval: "weekly" }
@@ -52,3 +70,6 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
