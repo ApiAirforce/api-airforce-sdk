@@ -1,9 +1,10 @@
 # api.airforce — Public API Surface
 
 This is the language-agnostic contract every SDK in this repo implements. It covers the
-**customer-facing** surface only: inference, media, model discovery, account
-self-service, keys, OAuth, and billing. The internal `/admin/*` control plane is **out of
-scope** for the SDKs.
+**customer-facing** surface only: inference (chat, embeddings), media (images, audio,
+video, 3D), model discovery, account self-service, notifications, organizations, keys,
+OAuth, and billing. The internal `/admin/*` control plane is **out of scope** for the
+SDKs.
 
 > Derived from the backend handlers and the frontend/app call sites. When in doubt, the
 > Rust handler is authoritative.
@@ -107,6 +108,11 @@ OpenAI-compatible chat completions with smart routing + fallback.
   `tool_choice?` (`'auto'|'none'` | `{type:'function', function:{name}}`)
 - `response_format?` (`{type:'json_object'}`), `reasoning_effort?` (`'low'|'medium'|'high'`)
 - `thinking?` (`'on'|'off'|'auto'` | `{type:'enabled', budget_tokens}`), `thinking_budget?` (u32)
+- `reasoning?` (`{format?:'separate'|'inline', exclude?:bool}`) — response-side shaping,
+  consumed server-side (never forwarded upstream): `'separate'` moves reasoning into
+  `message.reasoning`/`delta.reasoning` and strips it from `content`; `exclude:true` drops
+  reasoning from the response entirely; absent/`'inline'` keeps the current behaviour
+  (reasoning wrapped in `<think>…</think>` inside `content`)
 - **airforce:** `models?` (string[≤3] fallback), `skill?` (string), `skills?` (string[]),
   `transforms?` (`['middle-out']`), `ignore_defaults?` (bool)
 
@@ -147,6 +153,20 @@ OpenAI Responses API shape; translated to chat completions. `{model, instruction
 string | Item[], tools?, tool_choice?, max_output_tokens?, temperature?, top_p?, stream?,
 reasoning?:{effort}}`. Stream emits `response.*` events (`response.created`,
 `response.output_text.delta`, `response.completed`, …). No `models` fallback support.
+
+### POST `/v1/embeddings` — `api_key`/`oauth_bearer(chat)` — no streaming
+
+OpenAI-compatible embeddings with smart routing + provider fallback. Billed on **input
+tokens only** (embeddings produce no completion).
+
+**Request**: `{model, input: string | string[] | int[] | int[][] (required, non-empty),
+encoding_format?, dimensions?, user?}`.
+
+**Response**: upstream OpenAI shape, returned verbatim — `{object:'list',
+data:[{object:'embedding', index, embedding: number[] | base64 string}], model,
+usage:{prompt_tokens, total_tokens}}`. A request the upstream did not meter is billed $0.
+`503` (`api_error`) when the model is temporarily unavailable; `404` for unknown models;
+`400` on empty `input`.
 
 ### POST `/v1beta/models/{model}:{method}` — `api_key` (`x-goog-api-key`/`?key=`) — streaming ✔
 
@@ -246,7 +266,32 @@ The SDK should provide a `waitForCompletion` helper (poll or SSE).
 
 ---
 
-## 7. Voices (cloning)
+## 7. 3D generation (async task model)
+
+`api_key`-authenticated; mirrors the video task model. Owner-checked on every read — a
+poll/download/delete for another user's task returns 404 (never 403). Tasks and their
+stored artifacts expire after **24 h** (`expires_at`).
+
+| Method | Path | Body | Returns |
+| --- | --- | --- | --- |
+| POST | `/v1/3d/generations` | `{model, image_urls?:string[] (http(s) URL or data: URI, ≤4), resolution?:'low'\|'medium'\|'high', prompt?, ...extra}` | `Task3D` (status `queued`) |
+| GET | `/v1/3d/tasks` | — | `{data:[Task3D]}` (≤100, newest first) |
+| GET | `/v1/3d/tasks/{id}` | — | `Task3D` |
+| GET | `/v1/3d/tasks/{id}/content` | — | binary model bytes (`model/gltf-binary` for glb, `Content-Disposition: attachment`); 404 until `has_result` |
+| DELETE | `/v1/3d/tasks/{id}` | — | `{deleted:true}` (idempotent) |
+
+**`Task3D`**: `{task_id, status:'queued'|'processing'|'completed'|'failed'|'expired',
+model, created, error?, cost_cents?, expires_at, has_result, format? ('glb'|'ply', set on
+completion), resolution?, input_image_url?}`.
+
+Image-to-3D models require at least one `image_urls` entry; URLs are validated at submit
+time (internal/loopback targets rejected). Credits are deducted only when the worker picks
+up the task — a queued-but-never-run task never bills; failures are refunded. The SDK
+should provide a `waitForCompletion` helper (poll) plus a content download method.
+
+---
+
+## 8. Voices (cloning)
 
 | Method | Path | Body | Returns |
 | --- | --- | --- | --- |
@@ -261,7 +306,7 @@ rejected (`consent_stale`).
 
 ---
 
-## 8. Account (self-service)
+## 9. Account (self-service)
 
 Mostly `session_cookie` (session JWT). A few are `api_key` (marked).
 
@@ -305,9 +350,105 @@ admin_roles[], permissions[], primary_allowed_ips[], is_warm, google_email?, git
 github_username?, discord_username?, discord_phone_verified, has_ever_paid, models[],
 model_aliases{}, model_defaults{}}`.
 
+### Account closure (soft-close)
+
+| Method | Path | Auth | Body → Response |
+| --- | --- | --- | --- |
+| DELETE | `/api/me/account` | session | `{password, totp_code?, forfeit_balance_ack?}` → `{closed:true}` |
+| POST | `/auth/reactivate` | none | `{email, password}` → `{reactivated:true, email_restored, username_restored}` |
+
+`DELETE /api/me/account` re-authenticates in the body (password, plus TOTP when enrolled —
+missing code ⇒ 400 `totp_required`), then soft-closes the account: every session and OAuth
+token is revoked, the primary API key is rotated, all secondary keys are disabled,
+subscriptions are cancelled, and the remaining balance is forfeited **only** when
+`forfeit_balance_ack:true` (never auto-refunded). Idempotent — a repeat call returns
+`{closed:true}`.
+
+`POST /auth/reactivate` undoes a soft-close within a **14-day grace window**. Public by
+necessity (a closed account has no session); the caller identifies the account by its
+**former** email + password. Email/username are restored best-effort: `email_restored`/
+`username_restored` report whether each was still free; `409 username_unavailable` when the
+name was re-registered in the meantime (`409 not_reactivatable` on a race). No session is
+minted — the user logs in normally afterwards. Rate-limited like `/auth/login`
+(429 with `retry_after` on lockout).
+
 ---
 
-## 9. API keys
+## 10. Notifications
+
+Per-user notification preferences, the in-app feed, and delivery-channel linking. All
+`session_cookie`.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/me/notification-prefs` | — → `NotificationPrefs` |
+| PATCH | `/api/me/notification-prefs` | partial `NotificationPrefs` (absent field = unchanged; `quiet_hours: null` clears) → `NotificationPrefs` |
+| GET | `/api/me/notifications?limit=&before=` | — → `{items:[FeedItem], unread}` (limit 1–100, default 30; `before` = `created_at` cursor for paging) |
+| POST | `/api/me/notifications/read` | `{ids?:string[], all?:bool}` → `{updated, unread}` |
+| GET | `/api/me/channels` | — → `{identities:[ChannelIdentity], available_channels:string[]}` |
+| POST | `/api/me/channels` | `{channel, address, display?}` → `{status:'verification_sent', channel}`; bot channels (e.g. Telegram) with empty `address` → `{status:'link_ready', channel, code, deep_link?, expires_minutes}` |
+| POST | `/api/me/channels/verify` | `{channel, code}` → `{status:'verified', channel}` (400 on invalid/expired code) |
+| DELETE | `/api/me/channels/{channel}` | — → `{status:'revoked', channel}` |
+
+**`NotificationPrefs`**: `{routing:{category:[channel_id]}, price_drop:{enabled,
+scope:'global'|'watchlist_only', threshold_pct, min_absolute_drop_cents_per_1m},
+new_model:{enabled, providers[], modalities[]}, watchlist:{model:{added_at?, threshold_pct?,
+min_absolute_drop_cents_per_1m?}} (≤200 entries), digest_frequency:'off'|'instant'|'daily'|'weekly',
+quiet_hours?:{start:'HH:MM', end:'HH:MM', tz}, unsubscribed_all, strong_model_categories[]}`.
+Unknown channel ids in `routing` are dropped server-side.
+
+**`FeedItem`**: `{id, event_id, kind, params_json, link_url?, read_at?, created_at}`.
+**`ChannelIdentity`**: `{channel, address, display?, status, verified_at?, created_at}`.
+
+Verification codes are delivered **through the channel being linked** (proves control) and
+expire after 30 minutes.
+
+---
+
+## 11. Organizations
+
+Team self-service under `/api/org/*`. Auth = **session JWT** (same as `/api/me/*`); the org
+context is implicit via the caller's membership (one org per user). Roles: `owner` ⊃
+`admin` ⊃ `member` — the required role is noted per endpoint. `404 {error:'no_org'}` when
+the caller belongs to no org; suspended members get `403 membership_inactive` everywhere.
+
+| Method | Path | Role | Body → Response |
+| --- | --- | --- | --- |
+| GET | `/api/org` | any | — → `{org:Org, role}` |
+| PATCH | `/api/org` | owner | `{name?}` → `Org` |
+| PATCH | `/api/org/sso` | owner | `{tenant_id?, verified_domain?, enforced?}` (`''` clears a field; omit = unchanged) → `Org` (409 `tenant_already_claimed`/`domain_already_claimed`) |
+| GET | `/api/org/members` | admin | — → `{members:[Member]}` |
+| PATCH | `/api/org/members/{user_id}` | admin* | `{role?:'admin'\|'member', status?:'active'\|'suspended'}` → `Member` (owner row immutable) |
+| DELETE | `/api/org/members/{user_id}` | admin* / self | — → `{removed:true}` (self-delete = leave) |
+| GET | `/api/org/invites` | admin | — → `{invites:[Invite]}` (pending only) |
+| POST | `/api/org/invites` | admin* | `{email, role?='member'}` → 201 `{invite:{id, email, role, expires_at}, invite_url}` (429 on cooldown/cap) |
+| POST | `/api/org/invites/accept` | any user w/o org | `{token}` → `{org:Org, role}` (email must match the invite **and** be verified; 409 `already_in_org`, 410 expired) |
+| DELETE | `/api/org/invites/{id}` | admin | — → `{revoked:true}` |
+| GET | `/api/org/keys` | any | — → `{keys:[OrgKey]}` (member: own keys only) |
+| POST | `/api/org/keys` | admin | `{member_user_id, label?, credit_allowance?, limit_reset?:'daily'\|'weekly'\|'monthly', rpm_limit?, allowed_models?, blocked_models?, allowed_makers?, blocked_makers?, allowed_classes?, blocked_classes?, allowed_channels?, blocked_channels?, allowed_methods?, blocked_methods?, allowed_ips?}` → 201 `{item:OrgKey}` w/ **full key (once)** |
+| PATCH | `/api/org/keys/{id}` | admin | same fields + `disabled?` → `{item:OrgKey (masked)}` |
+| DELETE | `/api/org/keys/{id}` | admin | — → `{deleted:true}` |
+| GET | `/api/org/usage?from=&to=&member_user_id=&key_id=` | any (member: scoped to self) | — → `{total:{requests, tokens_in, tokens_out, cost_cents}, per_member:[{user_id, email?, username?, requests, tokens_in, tokens_out, cost_cents}], per_key:[{key_id, label?, member_user_id?, requests, cost_cents, credits_used, credit_allowance?}], timeseries:[day buckets], attribution_since}` |
+
+`admin` = owner **or** admin; where marked `admin*`, an admin may only act on/invite plain
+members (role changes and admin invites are owner-only).
+
+**`Org`**: `{id, name, created_at, member_count, settings:{sso: null | {tenant_id?,
+verified_domain?, enforced?}}}`.
+**`Member`**: `{user_id, email?, username?, role, status, joined_at}`.
+**`Invite`**: `{id, org_id, email, role, invited_by, created_at, expires_at}` (7-day expiry).
+**`OrgKey`**: the `ApiKey` fields (§12) plus `id ('okey_…'), org_id, member_user_id,
+member_email?, member_username?`; list/patch responses replace `key` with
+`masked_key`/`key_prefix`/`key_last4` — the full secret is shown only at create.
+
+Org keys bill the org owner's wallet and inherit the per-key allowance / limit-window /
+scoping semantics of §12. `from`/`to` are unix seconds (default: last 30 days);
+`cost_cents` values are **cents**. Creating an org itself is not self-service (contact
+support/sales).
+
+---
+
+## 12. API keys
 
 Two equivalent surfaces: `/v1/keys` (primary-key-authenticated, OpenAI-style) and
 `/api/user/keys` (session). The SDK exposes a `keys` resource using `/v1/keys`.
@@ -331,7 +472,7 @@ cannot manage other keys. Responses are `Cache-Control: no-store`.
 
 ---
 
-## 10. 2FA
+## 13. 2FA
 
 All `session_cookie`. `{secret, otpauth_url}` on init; verify returns backup codes.
 
@@ -346,7 +487,7 @@ All `session_cookie`. `{secret, otpauth_url}` on init; verify returns backup cod
 
 ---
 
-## 11. OAuth — as a provider (third-party integrators)
+## 14. OAuth — as a provider (third-party integrators)
 
 Scopes: `profile`, `chat`, `images`, `keys:read`, `keys:write` (sensitive). `response_type=code`
 only. PKCE `S256` (mandatory for public clients). Tokens `airf_oat_…`, TTL 1h–90d.
@@ -376,7 +517,7 @@ created_at, access_token_ttl_secs?}`.
 
 ---
 
-## 12. Auth (login / signup / verify)
+## 15. Auth (login / signup / verify)
 
 | Method | Path | Auth | Body → Response |
 | --- | --- | --- | --- |
@@ -393,7 +534,7 @@ account/billing methods read the cookie or accept a JWT directly.
 
 ---
 
-## 13. Billing & plans
+## 16. Billing & plans
 
 Plans: `starter`, `premium`, `plus`, `pro`, `master`, `elite`, `ultra`, plus `credits`
 (top-up). Amounts in USD for checkout, cents elsewhere.
@@ -413,7 +554,12 @@ part of the SDK.
 
 ## Out of scope (not in SDKs)
 
-- `/admin/*` — internal control plane (users, pricing, catalog, moderation, fidelity,
-  intercept, OAuth-client administration, provider keys, server config, analytics).
-- Payment webhooks (`/api/creem-webhook`, `/api/nowpayments-webhook`).
+- `/admin/*` — the internal control plane (users, pricing, catalog, moderation, fidelity,
+  intercept, OAuth-client administration, provider keys, server config, analytics, org
+  provisioning).
+- Payment webhooks (`/api/creem-webhook`, `/api/nowpayments-webhook`) — server-to-server
+  callbacks from the payment providers; never called by API clients.
+- Browser-based login flows — social sign-in (Google/GitHub/Discord) and Microsoft Entra
+  SSO redirects/callbacks, plus the `/oauth/authorize` consent SPA. SDKs consume the
+  resulting session JWT or OAuth token; they never drive a browser.
 - Internal/ops routes (env-secret gated).
