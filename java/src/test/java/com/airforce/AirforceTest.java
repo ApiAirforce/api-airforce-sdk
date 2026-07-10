@@ -43,6 +43,14 @@ class AirforceTest {
     return Airforce.builder().apiKey("sk-air-test").baseUrl(base).build();
   }
 
+  private Airforce startSession(HttpHandler handler) throws IOException {
+    server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/", handler);
+    server.start();
+    String base = "http://127.0.0.1:" + server.getAddress().getPort();
+    return Airforce.builder().sessionToken("jwt-test").baseUrl(base).build();
+  }
+
   private static void json(HttpExchange ex, int status, String body) throws IOException {
     byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
     ex.getResponseHeaders().set("Content-Type", "application/json");
@@ -136,6 +144,109 @@ class AirforceTest {
     assertEquals(402, err.status());
     assertTrue(err.isInsufficientBalance());
     assertEquals("insufficient_balance", err.code());
+  }
+
+  @Test
+  void embeddingsCreate() throws IOException {
+    AtomicReference<String> auth = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> body = new AtomicReference<>();
+    Airforce client = start(ex -> {
+      auth.set(ex.getRequestHeaders().getFirst("authorization"));
+      path.set(ex.getRequestURI().getPath());
+      body.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+      json(ex, 200,
+          "{\"object\":\"list\",\"data\":[{\"object\":\"embedding\",\"index\":0,\"embedding\":[0.1,0.2]}],"
+              + "\"model\":\"embed-1\",\"usage\":{\"prompt_tokens\":2,\"total_tokens\":2}}");
+    });
+
+    JsonNode res = client.embeddings().create(Map.of("model", "embed-1", "input", "hello"));
+
+    assertEquals("/v1/embeddings", path.get());
+    assertEquals("Bearer sk-air-test", auth.get());
+    assertTrue(body.get().contains("\"input\":\"hello\""));
+    assertEquals(2, res.get("data").get(0).get("embedding").size());
+    assertEquals(2, res.get("usage").get("prompt_tokens").asInt());
+  }
+
+  @Test
+  void orgMembersList() throws IOException {
+    AtomicReference<String> auth = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    Airforce client = startSession(ex -> {
+      auth.set(ex.getRequestHeaders().getFirst("authorization"));
+      path.set(ex.getRequestURI().getPath());
+      json(ex, 200, "{\"members\":[{\"user_id\":\"u1\",\"role\":\"owner\",\"status\":\"active\"}]}");
+    });
+
+    JsonNode members = client.org().members();
+
+    assertEquals("/api/org/members", path.get());
+    assertEquals("Bearer jwt-test", auth.get());
+    assertTrue(members.isArray());
+    assertEquals("owner", members.get(0).get("role").asText());
+  }
+
+  @Test
+  void notificationsList() throws IOException {
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> query = new AtomicReference<>();
+    Airforce client = startSession(ex -> {
+      path.set(ex.getRequestURI().getPath());
+      query.set(ex.getRequestURI().getQuery());
+      json(ex, 200,
+          "{\"items\":[{\"id\":\"n1\",\"kind\":\"price_drop\",\"created_at\":\"2026-01-01T00:00:00Z\"}],\"unread\":1}");
+    });
+
+    JsonNode res = client.notifications().list(10, null);
+
+    assertEquals("/api/me/notifications", path.get());
+    assertEquals("limit=10", query.get());
+    assertEquals(1, res.get("unread").asInt());
+    assertEquals("n1", res.get("items").get(0).get("id").asText());
+  }
+
+  @Test
+  void accountClose() throws IOException {
+    AtomicReference<String> method = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> body = new AtomicReference<>();
+    Airforce client = startSession(ex -> {
+      method.set(ex.getRequestMethod());
+      path.set(ex.getRequestURI().getPath());
+      body.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+      json(ex, 200, "{\"closed\":true}");
+    });
+
+    JsonNode res = client.account().closeAccount(Map.of("password", "pw", "forfeit_balance_ack", true));
+
+    assertEquals("DELETE", method.get());
+    assertEquals("/api/me/account", path.get());
+    assertTrue(body.get().contains("\"password\":\"pw\""));
+    assertTrue(res.get("closed").asBoolean());
+  }
+
+  @Test
+  void threeDGenerateAndWait() throws IOException {
+    AtomicInteger polls = new AtomicInteger();
+    Airforce client = start(ex -> {
+      String p = ex.getRequestURI().getPath();
+      if ("/v1/3d/generations".equals(p)) {
+        json(ex, 200, "{\"task_id\":\"t3d_1\",\"status\":\"queued\",\"model\":\"m3d\",\"has_result\":false}");
+      } else if (p.startsWith("/v1/3d/tasks/")) {
+        json(ex, 200, polls.incrementAndGet() >= 2
+            ? "{\"task_id\":\"t3d_1\",\"status\":\"completed\",\"has_result\":true,\"format\":\"glb\"}"
+            : "{\"task_id\":\"t3d_1\",\"status\":\"processing\",\"has_result\":false}");
+      } else {
+        json(ex, 404, "{\"error\":\"not_found\"}");
+      }
+    });
+
+    JsonNode task = client.threeD().generateAndWait(Map.of("model", "m3d", "prompt", "a cube"), 10, 5000);
+
+    assertEquals("completed", task.get("status").asText());
+    assertEquals("glb", task.get("format").asText());
+    assertEquals(2, polls.get());
   }
 
   @Test

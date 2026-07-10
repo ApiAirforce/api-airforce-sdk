@@ -142,5 +142,54 @@ foreach ($client->chat->createStream(['model' => 'm', 'messages' => []]) as $chu
 }
 eq($text, 'hello', 'streaming content');
 
+// 8. embeddings sends api-key auth + parses the OpenAI list shape
+$mock = new MockSender(static fn () => jsonResp(200, '{"object":"list","data":[{"object":"embedding","index":0,'
+    . '"embedding":[0.1,0.2]}],"model":"embed-1","usage":{"prompt_tokens":2,"total_tokens":2}}'));
+$client = new Client(apiKey: 'sk-air-test', baseUrl: 'https://api.airforce', sender: $mock);
+$res = $client->embeddings->create(['model' => 'embed-1', 'input' => 'hello']);
+eq($res['data'][0]['embedding'][1], 0.2, 'embeddings vector');
+eq($res['usage']['prompt_tokens'], 2, 'embeddings usage');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/embeddings', 'embeddings path');
+eq($mock->requests[0]['headers']['authorization'] ?? null, 'Bearer sk-air-test', 'embeddings auth header');
+
+// 9. org members list uses the session token and unwraps `members`
+$mock = new MockSender(static fn () => jsonResp(200, '{"members":[{"user_id":"u1","role":"owner","status":"active","joined_at":0}]}'));
+$client = new Client(sessionToken: 'jwt-test', baseUrl: 'https://api.airforce', sender: $mock);
+$members = $client->org->members();
+eq($members[0]['user_id'], 'u1', 'org members unwrap');
+eq($mock->requests[0]['method'], 'GET', 'org members method');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/api/org/members', 'org members path');
+eq($mock->requests[0]['headers']['authorization'] ?? null, 'Bearer jwt-test', 'org session auth');
+
+// 10. notifications list forwards paging query params
+$mock = new MockSender(static fn () => jsonResp(200, '{"items":[{"id":"n1","kind":"price_drop"}],"unread":3}'));
+$client = new Client(sessionToken: 'jwt-test', baseUrl: 'https://api.airforce', sender: $mock);
+$res = $client->notifications->list(limit: 10, before: '2026-01-01T00:00:00Z');
+eq($res['unread'], 3, 'notifications unread');
+eq($res['items'][0]['id'], 'n1', 'notifications item id');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/api/me/notifications', 'notifications path');
+parse_str((string) parse_url($mock->requests[0]['url'], PHP_URL_QUERY), $q);
+eq($q['limit'] ?? null, '10', 'notifications limit query');
+eq($q['before'] ?? null, '2026-01-01T00:00:00Z', 'notifications before query');
+
+// 11. account close sends DELETE with the re-auth body
+$mock = new MockSender(static fn () => jsonResp(200, '{"closed":true}'));
+$client = new Client(sessionToken: 'jwt-test', baseUrl: 'https://api.airforce', sender: $mock);
+$res = $client->account->closeAccount('hunter2', totpCode: '123456', forfeitBalanceAck: true);
+eq($res['closed'], true, 'account close result');
+eq($mock->requests[0]['method'], 'DELETE', 'account close method');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/api/me/account', 'account close path');
+$body = json_decode((string) $mock->requests[0]['body'], true);
+eq($body['password'] ?? null, 'hunter2', 'account close password');
+eq($body['totp_code'] ?? null, '123456', 'account close totp');
+eq($body['forfeit_balance_ack'] ?? null, true, 'account close forfeit ack');
+
+// 12. 3d task content returns raw bytes
+$glb = "glTF\x02\x00\x00\x00";
+$mock = new MockSender(static fn () => ['status' => 200, 'headers' => ['content-type' => 'model/gltf-binary'], 'body' => $glb]);
+$client = new Client(apiKey: 'sk-air-test', baseUrl: 'https://api.airforce', sender: $mock);
+eq($client->threeD->content('task_1'), $glb, '3d content bytes');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/3d/tasks/task_1/content', '3d content path');
+
 echo "\n{$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

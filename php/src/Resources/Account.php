@@ -125,6 +125,47 @@ final class Account
         return $this->t->method('PUT', '/api/user/channel-prefs', 'api_key', $pins);
     }
 
+    /** @param array<string,string> $prefs map of model → routing category id */
+    public function setRoutingCategoryPrefs(array $prefs): mixed
+    {
+        return $this->t->method('PUT', '/api/user/routing-category-prefs', 'api_key', $prefs);
+    }
+    /** @param array<string,mixed> $prefs map of model → `{order: string[], auto_fallback?}` */
+    public function setChannelOrderPrefs(array $prefs): mixed
+    {
+        return $this->t->method('PUT', '/api/user/channel-order-prefs', 'api_key', $prefs);
+    }
+
+    public function getCustomCategories(): mixed
+    {
+        return $this->t->get('/api/user/custom-categories', 'api_key');
+    }
+    /** @param list<array<string,mixed>> $categories routing categories (max 20) */
+    public function setCustomCategories(array $categories): mixed
+    {
+        return $this->t->method('PUT', '/api/user/custom-categories', 'api_key', $categories);
+    }
+    /** Routing categories applicable to a model: `{categories}`. */
+    public function routingCategories(string $model): mixed
+    {
+        return $this->t->get('/api/user/routing-categories', 'api_key', ['model' => $model]);
+    }
+
+    /** @param array<string,mixed> $request `{fake_name, endpoint, api_key?, ...}` (endpoint is SSRF-validated) */
+    public function createCustomModel(array $request): mixed
+    {
+        return $this->t->post('/api/models', 'session', $request);
+    }
+    /** @param array<string,mixed> $request */
+    public function updateCustomModel(string $fakeName, array $request): mixed
+    {
+        return $this->t->method('PUT', '/api/models/' . rawurlencode($fakeName), 'session', $request);
+    }
+    public function deleteCustomModel(string $fakeName): mixed
+    {
+        return $this->t->delete('/api/models/' . rawurlencode($fakeName), 'session');
+    }
+
     public function sessions(): mixed
     {
         return $this->t->get('/api/me/sessions', 'session');
@@ -159,5 +200,24 @@ final class Account
     public function togglePayAsYouGo(): mixed
     {
         return $this->t->post('/api/pay-as-you-go/toggle', 'session');
+    }
+
+    /**
+     * Soft-close the account (re-authenticates in the body; 400 `totp_required` when 2FA
+     * is enrolled and `$totpCode` is missing). Revokes every session and OAuth token,
+     * rotates the primary API key, disables secondary keys, and cancels subscriptions.
+     * The remaining balance is forfeited only when `$forfeitBalanceAck` is true.
+     * Idempotent; reversible for 14 days via `auth->reactivate()`.
+     */
+    public function closeAccount(string $password, ?string $totpCode = null, bool $forfeitBalanceAck = false): mixed
+    {
+        $body = ['password' => $password];
+        if ($totpCode !== null) {
+            $body['totp_code'] = $totpCode;
+        }
+        if ($forfeitBalanceAck) {
+            $body['forfeit_balance_ack'] = true;
+        }
+        return $this->t->method('DELETE', '/api/me/account', 'session', $body);
     }
 }

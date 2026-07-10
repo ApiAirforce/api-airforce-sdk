@@ -5,9 +5,14 @@ OpenAI-compatible API in front of many model providers. Works on the Dart VM and
 
 ## Install
 
+The package is not published on pub.dev yet — depend on it straight from Git:
+
 ```yaml
 dependencies:
-  airforce: ^0.0.1
+  airforce:
+    git:
+      url: https://github.com/ApiAirforce/api-airforce-sdk.git
+      path: dart
 ```
 
 ## Quick start
@@ -52,6 +57,32 @@ await client.chat.create({
 });
 ```
 
+## Reasoning output
+
+Reasoning models return their thinking inline in `content`
+(`<think>…</think>`) by default. The optional `reasoning` parameter reshapes
+the response server-side (it is never forwarded upstream):
+
+```dart
+final res = await client.chat.create({
+  'model': 'deepseek-r1',
+  'messages': [{'role': 'user', 'content': 'hi'}],
+  'reasoning': {'format': 'separate'}, // move it into message.reasoning
+  // 'reasoning': {'exclude': true},   // ...or drop it entirely
+});
+print(res['choices'][0]['message']['reasoning']);
+```
+
+## Embeddings
+
+```dart
+final res = await client.embeddings.create({
+  'model': 'text-embedding-3-small',
+  'input': ['first text', 'second text'],
+});
+print(res['data'][0]['embedding']);
+```
+
 ## Media
 
 ```dart
@@ -67,6 +98,12 @@ await File('out.mp3').writeAsBytes(audio);
 // Video (async — poll until done)
 final video = await client.video.generateAndWait({'model': 'veo-3', 'prompt': 'a paper plane over a city'});
 print(video['result_url']);
+
+// 3D (async — poll until done, then download the artifact)
+final task = await client.threeD.generateAndWait({
+  'model': '3d-1', 'image_urls': ['https://example.com/toy.png'],
+});
+await File('model.glb').writeAsBytes(await client.threeD.content(task['task_id']));
 ```
 
 ## Account, keys & billing
@@ -84,6 +121,46 @@ final key = await client.keys.create({'label': 'ci', 'rpm_limit': 60});
 
 You can also pass a token: `AirforceClient(sessionToken: jwt)` or
 `client.setSessionToken(jwt)`.
+
+The `account` resource also covers routing preferences (`setRoutingCategoryPrefs`,
+`setChannelOrderPrefs`, `getCustomCategories`/`setCustomCategories`,
+`getRoutingCategories`) and custom provider models (`addCustomModel`,
+`updateCustomModel`, `deleteCustomModel`).
+
+## Organizations
+
+Org endpoints use the session token too; the org context is implicit via your
+membership:
+
+```dart
+final overview = await client.org.get(); // {org, role}
+final members = await client.org.members();
+final invite = await client.org.createInvite('teammate@example.com');
+final key = await client.org.createKey({'member_user_id': 'u_123', 'label': 'ci'});
+final usage = await client.org.usage();
+```
+
+## Notifications
+
+```dart
+final feed = await client.notifications.list(limit: 20); // {items, unread}
+await client.notifications.markRead(all: true);
+await client.notifications.updatePrefs({
+  'price_drop': {'enabled': true, 'threshold_pct': 10},
+});
+
+// Link a delivery channel (code arrives through the channel itself)
+await client.notifications.addChannel('email', 'me@example.com');
+await client.notifications.verifyChannel('email', '123456');
+```
+
+## Account closure
+
+```dart
+await client.account.closeAccount(password: 'pw', totpCode: '123456');
+// changed your mind? (within the 14-day grace window; no session needed)
+await client.auth.reactivate('me@example.com', 'pw');
+```
 
 ## OAuth (third-party integrators)
 

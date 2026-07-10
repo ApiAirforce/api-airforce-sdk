@@ -75,6 +75,37 @@ public sealed class AccountResource : Resource
     public Task<JsonNode?> SetChannelPinsAsync(object pins, CancellationToken ct = default)
         => Transport.MethodAsync(HttpMethod.Put, "/api/user/channel-prefs", "api_key", pins, ct);
 
+    /// <summary>Pin models to routing categories — <c>{model: category_id}</c>.</summary>
+    public Task<JsonNode?> SetRoutingCategoryPrefsAsync(object prefs, CancellationToken ct = default)
+        => Transport.MethodAsync(HttpMethod.Put, "/api/user/routing-category-prefs", "api_key", prefs, ct);
+
+    /// <summary>Set per-model channel ordering — <c>{model: {order: string[], auto_fallback?}}</c>.</summary>
+    public Task<JsonNode?> SetChannelOrderPrefsAsync(object prefs, CancellationToken ct = default)
+        => Transport.MethodAsync(HttpMethod.Put, "/api/user/channel-order-prefs", "api_key", prefs, ct);
+
+    public Task<JsonNode?> GetCustomCategoriesAsync(CancellationToken ct = default)
+        => Transport.GetAsync("/api/user/custom-categories", "api_key", null, ct);
+
+    /// <summary>Replace the caller's custom routing categories (max 20).</summary>
+    public Task<JsonNode?> SetCustomCategoriesAsync(object categories, CancellationToken ct = default)
+        => Transport.MethodAsync(HttpMethod.Put, "/api/user/custom-categories", "api_key", categories, ct);
+
+    /// <summary>List the routing categories available for a model.</summary>
+    public Task<JsonNode?> RoutingCategoriesAsync(string model, CancellationToken ct = default)
+        => Transport.GetAsync("/api/user/routing-categories", "api_key",
+            new Dictionary<string, string?> { ["model"] = model }, ct);
+
+    /// <summary>Register a custom provider model (<c>{fake_name, endpoint, api_key?, …}</c>;
+    /// the endpoint is SSRF-validated server-side).</summary>
+    public Task<JsonNode?> CreateCustomModelAsync(object request, CancellationToken ct = default)
+        => Transport.PostAsync("/api/models", "session", request, ct);
+
+    public Task<JsonNode?> UpdateCustomModelAsync(string fakeName, object request, CancellationToken ct = default)
+        => Transport.MethodAsync(HttpMethod.Put, $"/api/models/{Enc(fakeName)}", "session", request, ct);
+
+    public Task<JsonNode?> DeleteCustomModelAsync(string fakeName, CancellationToken ct = default)
+        => Transport.DeleteAsync($"/api/models/{Enc(fakeName)}", "session", ct);
+
     public Task<JsonNode?> SessionsAsync(CancellationToken ct = default)
         => Transport.GetAsync("/api/me/sessions", "session", null, ct);
 
@@ -103,6 +134,22 @@ public sealed class AccountResource : Resource
 
     public Task<JsonNode?> TogglePayAsYouGoAsync(CancellationToken ct = default)
         => Transport.PostAsync("/api/pay-as-you-go/toggle", "session", null, ct);
+
+    /// <summary>Soft-close the account — <c>DELETE /api/me/account</c>. Re-authenticates in
+    /// the body (<paramref name="totpCode"/> is required when 2FA is enrolled, otherwise the
+    /// call fails with 400 <c>totp_required</c>). Revokes every session and OAuth token,
+    /// rotates the primary key, disables secondary keys, and cancels subscriptions. The
+    /// remaining balance is forfeited only when <paramref name="forfeitBalanceAck"/> is
+    /// true. Idempotent. A closed account can be restored within 14 days via
+    /// <see cref="AuthResource.ReactivateAsync"/>.</summary>
+    public Task<JsonNode?> CloseAccountAsync(string password, string? totpCode = null,
+        bool? forfeitBalanceAck = null, CancellationToken ct = default)
+    {
+        var body = new JsonObject { ["password"] = password };
+        if (totpCode != null) body["totp_code"] = totpCode;
+        if (forfeitBalanceAck.HasValue) body["forfeit_balance_ack"] = forfeitBalanceAck.Value;
+        return Transport.MethodAsync(HttpMethod.Delete, "/api/me/account", "session", body, ct);
+    }
 }
 
 /// <summary>API key provisioning — <c>/v1/keys</c>.</summary>

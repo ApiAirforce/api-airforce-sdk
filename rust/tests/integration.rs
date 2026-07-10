@@ -1,7 +1,8 @@
 use airforce::{Client, Error};
 use futures::StreamExt;
 use serde_json::json;
-use wiremock::matchers::{header, method, path};
+use std::time::Duration;
+use wiremock::matchers::{body_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const COMPLETION: &str = r#"{"id":"cmpl_1","object":"chat.completion","created":0,"model":"claude-opus-4.8","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}"#;
@@ -132,6 +133,157 @@ async fn error_mapping_payment_required() {
     assert_eq!(err.status(), Some(402));
     assert!(err.is_insufficient_balance());
     assert_eq!(err.code(), Some("insufficient_balance"));
+}
+
+#[tokio::test]
+async fn embeddings_create_sends_bearer_and_parses() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/embeddings"))
+        .and(header("authorization", "Bearer sk-air-test"))
+        .and(body_json(json!({"model": "text-embed-1", "input": "hello"})))
+        .respond_with(json_response(
+            200,
+            r#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"text-embed-1","usage":{"prompt_tokens":2,"total_tokens":2}}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .api_key("sk-air-test")
+        .base_url(server.uri())
+        .build();
+    let res = client
+        .embeddings()
+        .create(json!({"model": "text-embed-1", "input": "hello"}))
+        .await
+        .unwrap();
+    assert_eq!(res["object"], "list");
+    assert_eq!(res["data"][0]["embedding"][1], 0.2);
+    assert_eq!(res["usage"]["prompt_tokens"], 2);
+}
+
+#[tokio::test]
+async fn org_members_lists_with_session_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/org/members"))
+        .and(header("authorization", "Bearer jwt-test"))
+        .respond_with(json_response(
+            200,
+            r#"{"members":[{"user_id":"u1","role":"owner","status":"active","joined_at":0}]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .session_token("jwt-test")
+        .base_url(server.uri())
+        .build();
+    let members = client.org().members().await.unwrap();
+    assert_eq!(members[0]["user_id"], "u1");
+    assert_eq!(members[0]["role"], "owner");
+}
+
+#[tokio::test]
+async fn org_endpoint_requires_session_token() {
+    // Org endpoints are session-authed; an API key must NOT be substituted.
+    let client = Client::builder()
+        .api_key("sk-air-test")
+        .base_url("http://127.0.0.1:1")
+        .build();
+    let err = client.org().get().await.unwrap_err();
+    assert!(matches!(err, Error::MissingCredential(_)));
+}
+
+#[tokio::test]
+async fn notifications_list_passes_paging_query() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/me/notifications"))
+        .and(query_param("limit", "10"))
+        .and(query_param("before", "1700000000"))
+        .and(header("authorization", "Bearer jwt-test"))
+        .respond_with(json_response(
+            200,
+            r#"{"items":[{"id":"n1","event_id":"e1","kind":"price_drop","params_json":"{}","created_at":1699999999}],"unread":1}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .session_token("jwt-test")
+        .base_url(server.uri())
+        .build();
+    let res = client
+        .notifications()
+        .list(Some(10), Some("1700000000"))
+        .await
+        .unwrap();
+    assert_eq!(res["items"][0]["id"], "n1");
+    assert_eq!(res["unread"], 1);
+}
+
+#[tokio::test]
+async fn account_close_reauthenticates_in_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/api/me/account"))
+        .and(header("authorization", "Bearer jwt-test"))
+        .and(body_json(json!({
+            "password": "pw",
+            "totp_code": "123456",
+            "forfeit_balance_ack": true,
+        })))
+        .respond_with(json_response(200, r#"{"closed":true}"#))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .session_token("jwt-test")
+        .base_url(server.uri())
+        .build();
+    let res = client
+        .account()
+        .close_account("pw", Some("123456"), true)
+        .await
+        .unwrap();
+    assert_eq!(res["closed"], true);
+}
+
+#[tokio::test]
+async fn threed_wait_then_download_content() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/3d/tasks/t3d_1"))
+        .respond_with(json_response(
+            200,
+            r#"{"task_id":"t3d_1","status":"completed","model":"m","created":0,"expires_at":86400,"has_result":true,"format":"glb"}"#,
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/3d/tasks/t3d_1/content"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "model/gltf-binary")
+                .set_body_bytes(b"glTF-bytes".to_vec()),
+        )
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .api_key("sk-air-test")
+        .base_url(server.uri())
+        .build();
+    let task = client
+        .three_d()
+        .wait_for_completion("t3d_1", Duration::from_millis(1), Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(task["format"], "glb");
+    let bytes = client.three_d().content("t3d_1").await.unwrap();
+    assert_eq!(bytes, b"glTF-bytes");
 }
 
 #[tokio::test]

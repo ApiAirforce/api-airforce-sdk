@@ -1,6 +1,18 @@
 import '../transport.dart';
 
 /// Chat completions — `POST /v1/chat/completions`.
+///
+/// Request maps are passed through verbatim, so every documented parameter —
+/// including the airforce extensions (`models` fallback, `skill`/`skills`,
+/// `transforms`) — works as-is.
+///
+/// The optional `reasoning` parameter (`{'format': 'separate'|'inline',
+/// 'exclude': bool}`) shapes how reasoning appears in the response. It is
+/// consumed server-side and never forwarded upstream: `'separate'` moves
+/// reasoning into `message.reasoning` / `delta.reasoning` and strips it from
+/// `content`; `'exclude': true` drops reasoning from the response entirely;
+/// absent or `'inline'` keeps reasoning wrapped in `<think>…</think>` inside
+/// `content`.
 class Chat {
   final Transport _t;
   Chat(this._t);
@@ -37,6 +49,21 @@ class Responses {
 
   Stream<dynamic> createStream(Map<String, dynamic> request) =>
       _t.postStream('/v1/responses', 'api_key', {...request, 'stream': true});
+}
+
+/// Embeddings — `POST /v1/embeddings`.
+///
+/// OpenAI-compatible embeddings with smart routing + provider fallback.
+/// Billed on input tokens only; no streaming.
+class Embeddings {
+  final Transport _t;
+  Embeddings(this._t);
+
+  /// `{model, input: string | string[] | int[] | int[][], encoding_format?,
+  /// dimensions?, user?}` → the upstream OpenAI shape
+  /// (`{object: 'list', data: [{embedding, index}], model, usage}`).
+  Future<dynamic> create(Map<String, dynamic> request) =>
+      _t.post('/v1/embeddings', 'api_key', request);
 }
 
 /// Google Gemini-compatible generation — `POST /v1beta/models/{model}:{method}`.

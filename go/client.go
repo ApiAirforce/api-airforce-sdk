@@ -34,21 +34,25 @@ type Client struct {
 	maxRetries   int
 	headers      map[string]string
 
-	Chat      *ChatService
-	Messages  *MessagesService
-	Responses *ResponsesService
-	Gemini    *GeminiService
-	Models    *ModelsService
-	Images    *ImagesService
-	Audio     *AudioService
-	Video     *VideoService
-	Voices    *VoicesService
-	Account   *AccountService
-	Keys      *KeysService
-	Billing   *BillingService
-	TwoFactor *TwoFactorService
-	Auth      *AuthService
-	OAuth     *OAuthService
+	Chat          *ChatService
+	Messages      *MessagesService
+	Responses     *ResponsesService
+	Gemini        *GeminiService
+	Embeddings    *EmbeddingsService
+	Models        *ModelsService
+	Images        *ImagesService
+	Audio         *AudioService
+	Video         *VideoService
+	ThreeD        *ThreeDService
+	Voices        *VoicesService
+	Account       *AccountService
+	Keys          *KeysService
+	Org           *OrgService
+	Notifications *NotificationsService
+	Billing       *BillingService
+	TwoFactor     *TwoFactorService
+	Auth          *AuthService
+	OAuth         *OAuthService
 }
 
 // Option configures a Client.
@@ -101,13 +105,17 @@ func New(opts ...Option) *Client {
 	c.Messages = &MessagesService{c}
 	c.Responses = &ResponsesService{c}
 	c.Gemini = &GeminiService{c}
+	c.Embeddings = &EmbeddingsService{c}
 	c.Models = &ModelsService{c}
 	c.Images = &ImagesService{c}
 	c.Audio = &AudioService{c}
 	c.Video = &VideoService{c}
+	c.ThreeD = &ThreeDService{c}
 	c.Voices = &VoicesService{c}
 	c.Account = &AccountService{c}
 	c.Keys = &KeysService{c}
+	c.Org = &OrgService{c}
+	c.Notifications = &NotificationsService{c}
 	c.Billing = &BillingService{c}
 	c.TwoFactor = &TwoFactorService{c}
 	c.Auth = &AuthService{c}

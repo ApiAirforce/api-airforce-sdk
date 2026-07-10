@@ -61,6 +61,22 @@ export type ThinkingParam =
   | "auto"
   | { type: "enabled"; budget_tokens?: number };
 
+/**
+ * Response-side reasoning shaping. Consumed server-side, never forwarded
+ * upstream — it changes how reasoning appears in the response, not how the
+ * model thinks (use `thinking` / `reasoning_effort` for that).
+ */
+export interface ReasoningConfig {
+  /**
+   * `'separate'` moves reasoning into `message.reasoning` (non-stream) /
+   * `delta.reasoning` (stream) and strips it from `content`. Absent or
+   * `'inline'` keeps reasoning wrapped in `<think>…</think>` inside `content`.
+   */
+  format?: "separate" | "inline";
+  /** Drop reasoning from the response entirely. */
+  exclude?: boolean;
+}
+
 export interface ChatCompletionCreateParamsBase {
   /** Public model name, e.g. `claude-opus-4.8`. */
   model: string;
@@ -75,6 +91,8 @@ export interface ChatCompletionCreateParamsBase {
   reasoning_effort?: "low" | "medium" | "high";
   thinking?: ThinkingParam;
   thinking_budget?: number;
+  /** Response-side reasoning shaping (see {@link ReasoningConfig}). */
+  reasoning?: ReasoningConfig;
   /** airforce: up to 3 fallback model names tried in order. */
   models?: string[];
   /** airforce: a single server-side skill to inject. */

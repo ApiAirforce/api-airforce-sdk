@@ -139,6 +139,67 @@ public sealed class VideoResource : Resource
     }
 }
 
+/// <summary>Async 3D model generation — <c>/v1/3d/*</c>.</summary>
+public sealed class ThreeDResource : Resource
+{
+    private static readonly HashSet<string> Terminal = new() { "completed", "failed", "expired" };
+
+    internal ThreeDResource(Transport t) : base(t) { }
+
+    /// <summary>Create a 3D generation task. Image-to-3D models need at least one
+    /// <c>image_urls</c> entry (http(s) URL or data: URI, max 4); <c>resolution</c> is
+    /// <c>"low"|"medium"|"high"</c>. Credits are deducted only when a worker claims the
+    /// task; failures are refunded. Tasks and their artifacts expire after 24 hours.</summary>
+    public Task<JsonNode?> GenerateAsync(object request, CancellationToken ct = default)
+        => Transport.PostAsync("/v1/3d/generations", "api_key", request, ct);
+
+    public Task<JsonNode?> GetTaskAsync(string id, CancellationToken ct = default)
+        => Transport.GetAsync($"/v1/3d/tasks/{Enc(id)}", "api_key", null, ct);
+
+    public async Task<JsonNode?> ListTasksAsync(CancellationToken ct = default)
+    {
+        var res = await Transport.GetAsync("/v1/3d/tasks", "api_key", null, ct).ConfigureAwait(false);
+        return res?["data"] ?? res;
+    }
+
+    /// <summary>Download the finished model artifact (glb or ply bytes; see the task's
+    /// <c>format</c> field). Returns 404 until <c>has_result</c> is true.</summary>
+    public Task<byte[]> DownloadAsync(string id, CancellationToken ct = default)
+        => Transport.GetBytesAsync($"/v1/3d/tasks/{Enc(id)}/content", "api_key", ct);
+
+    /// <summary>Remove a task and its artifact from history; idempotent.</summary>
+    public Task<JsonNode?> DeleteTaskAsync(string id, CancellationToken ct = default)
+        => Transport.DeleteAsync($"/v1/3d/tasks/{Enc(id)}", "api_key", ct);
+
+    /// <summary>Poll a task until it reaches a terminal state.</summary>
+    public async Task<JsonNode?> WaitForCompletionAsync(string id, TimeSpan? pollInterval = null,
+        TimeSpan? timeout = null, CancellationToken ct = default)
+    {
+        var interval = pollInterval ?? TimeSpan.FromMilliseconds(2500);
+        var deadline = Stopwatch.GetTimestamp() + (long)((timeout ?? TimeSpan.FromMinutes(10)).TotalSeconds * Stopwatch.Frequency);
+        while (true)
+        {
+            var task = await GetTaskAsync(id, ct).ConfigureAwait(false);
+            var status = task?["status"]?.GetValue<string>() ?? "";
+            if (status == "completed") return task;
+            if (Terminal.Contains(status))
+                throw new AirforceException($"airforce: 3d task {id} ended with status {status}", code: status);
+            if (Stopwatch.GetTimestamp() > deadline)
+                throw new AirforceException($"airforce: timed out waiting for 3d task {id}", code: "wait_timeout");
+            await Task.Delay(interval, ct).ConfigureAwait(false);
+        }
+    }
+
+    public async Task<JsonNode?> GenerateAndWaitAsync(object request, TimeSpan? pollInterval = null,
+        TimeSpan? timeout = null, CancellationToken ct = default)
+    {
+        var task = await GenerateAsync(request, ct).ConfigureAwait(false);
+        var id = task?["task_id"]?.GetValue<string>()
+            ?? throw new AirforceException("airforce: 3d task response had no task_id");
+        return await WaitForCompletionAsync(id, pollInterval, timeout, ct).ConfigureAwait(false);
+    }
+}
+
 /// <summary>Voice cloning — <c>/v1/voices/*</c>.</summary>
 public sealed class VoicesResource : Resource
 {

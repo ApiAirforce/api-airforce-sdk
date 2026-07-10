@@ -75,4 +75,14 @@ final class Auth
         $this->t->setSessionToken(null);
         return $result;
     }
+
+    /**
+     * Reactivate a soft-closed account within the 14-day grace window, identified by its
+     * former email + password. No session is minted — log in normally afterwards.
+     * Returns `{reactivated, email_restored, username_restored}`.
+     */
+    public function reactivate(string $email, string $password): mixed
+    {
+        return $this->t->post('/auth/reactivate', 'none', ['email' => $email, 'password' => $password]);
+    }
 }

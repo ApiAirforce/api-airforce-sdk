@@ -1,4 +1,4 @@
-"""Media resources: images, audio, video, and voice cloning."""
+"""Media resources: images, audio, video, 3D generation, and voice cloning."""
 
 from __future__ import annotations
 
@@ -213,6 +213,85 @@ class AsyncVideo(AsyncAPIResource):
 
     async def generate_and_wait(self, *, model: str, prompt: str, poll_interval: float = 2.5, timeout: float = 600.0, **params: Any) -> Any:
         task = await self.generate(model=model, prompt=prompt, **params)
+        return await self.wait_for_completion(task["task_id"], poll_interval=poll_interval, timeout=timeout)
+
+
+# --- 3D generation -----------------------------------------------------------
+
+class ThreeD(SyncAPIResource):
+    def generate(self, *, model: str, **params: Any) -> Any:
+        """Create an async 3D generation task. Optional: image_urls (http(s) URL or
+        ``data:`` URI, max 4 — at least one is required for image-to-3D models),
+        resolution ('low'|'medium'|'high'), prompt. Credits are deducted only when
+        the worker claims the task (failures are refunded); tasks and their stored
+        artifacts expire after 24 h."""
+        return self._transport.request("POST", "/v1/3d/generations", json={"model": model, **clean(**params)})
+
+    def get_task(self, task_id: str, **kw: Any) -> Any:
+        return self._transport.request("GET", f"/v1/3d/tasks/{enc(task_id)}", **kw)
+
+    def list_tasks(self, **kw: Any) -> List[Any]:
+        res = self._transport.request("GET", "/v1/3d/tasks", **kw)
+        return res.get("data", []) if isinstance(res, dict) else res
+
+    def content(self, task_id: str, **kw: Any) -> bytes:
+        """Download the finished model artifact (glb/ply bytes). 404 until the
+        task's ``has_result`` is true."""
+        return self._transport.request_binary("GET", f"/v1/3d/tasks/{enc(task_id)}/content", **kw)
+
+    def delete_task(self, task_id: str, **kw: Any) -> Any:
+        return self._transport.request("DELETE", f"/v1/3d/tasks/{enc(task_id)}", **kw)
+
+    def wait_for_completion(self, task_id: str, *, poll_interval: float = 2.5, timeout: float = 600.0, **kw: Any) -> Any:
+        deadline = time.monotonic() + timeout
+        while True:
+            task = self.get_task(task_id, **kw)
+            status = task.get("status")
+            if status in _TERMINAL:
+                if status != "completed":
+                    raise AirforceError(f"3D task {task_id} ended with status '{status}'", code=status, body=task)
+                return task
+            if time.monotonic() > deadline:
+                raise AirforceError(f"Timed out waiting for 3D task {task_id}", code="wait_timeout", body=task)
+            time.sleep(poll_interval)
+
+    def generate_and_wait(self, *, model: str, poll_interval: float = 2.5, timeout: float = 600.0, **params: Any) -> Any:
+        task = self.generate(model=model, **params)
+        return self.wait_for_completion(task["task_id"], poll_interval=poll_interval, timeout=timeout)
+
+
+class AsyncThreeD(AsyncAPIResource):
+    async def generate(self, *, model: str, **params: Any) -> Any:
+        return await self._transport.request("POST", "/v1/3d/generations", json={"model": model, **clean(**params)})
+
+    async def get_task(self, task_id: str, **kw: Any) -> Any:
+        return await self._transport.request("GET", f"/v1/3d/tasks/{enc(task_id)}", **kw)
+
+    async def list_tasks(self, **kw: Any) -> List[Any]:
+        res = await self._transport.request("GET", "/v1/3d/tasks", **kw)
+        return res.get("data", []) if isinstance(res, dict) else res
+
+    async def content(self, task_id: str, **kw: Any) -> bytes:
+        return await self._transport.request_binary("GET", f"/v1/3d/tasks/{enc(task_id)}/content", **kw)
+
+    async def delete_task(self, task_id: str, **kw: Any) -> Any:
+        return await self._transport.request("DELETE", f"/v1/3d/tasks/{enc(task_id)}", **kw)
+
+    async def wait_for_completion(self, task_id: str, *, poll_interval: float = 2.5, timeout: float = 600.0, **kw: Any) -> Any:
+        deadline = time.monotonic() + timeout
+        while True:
+            task = await self.get_task(task_id, **kw)
+            status = task.get("status")
+            if status in _TERMINAL:
+                if status != "completed":
+                    raise AirforceError(f"3D task {task_id} ended with status '{status}'", code=status, body=task)
+                return task
+            if time.monotonic() > deadline:
+                raise AirforceError(f"Timed out waiting for 3D task {task_id}", code="wait_timeout", body=task)
+            await asyncio.sleep(poll_interval)
+
+    async def generate_and_wait(self, *, model: str, poll_interval: float = 2.5, timeout: float = 600.0, **params: Any) -> Any:
+        task = await self.generate(model=model, **params)
         return await self.wait_for_completion(task["task_id"], poll_interval=poll_interval, timeout=timeout)
 
 

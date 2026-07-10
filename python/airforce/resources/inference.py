@@ -1,4 +1,4 @@
-"""Inference resources: chat completions, Anthropic messages, OpenAI responses."""
+"""Inference resources: chat completions, embeddings, Anthropic messages, OpenAI responses."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any, List
 from ._base import AsyncAPIResource, SyncAPIResource, clean, enc
 
 _CHAT = "/v1/chat/completions"
+_EMBEDDINGS = "/v1/embeddings"
 _MESSAGES = "/v1/messages"
 _COUNT_TOKENS = "/v1/messages/count_tokens"
 _RESPONSES = "/v1/responses"
@@ -24,6 +25,13 @@ class Chat(SyncAPIResource):
         Optional params: max_tokens, temperature, top_p, stop, tools, tool_choice,
         response_format, reasoning_effort, thinking, thinking_budget, ``models``
         (fallback array), skill, skills, transforms, ignore_defaults.
+
+        ``reasoning`` (``{"format": "separate"|"inline", "exclude": bool}``) shapes the
+        *response* and is consumed server-side (never forwarded upstream):
+        ``"separate"`` moves reasoning into ``message["reasoning"]`` /
+        ``delta["reasoning"]`` and strips it from ``content``; ``exclude=True`` drops
+        reasoning entirely; absent/``"inline"`` keeps ``<think>...</think>`` inline in
+        ``content``.
         """
         body = {"model": model, "messages": messages, "stream": stream, **clean(**params)}
         if stream:
@@ -37,6 +45,22 @@ class AsyncChat(AsyncAPIResource):
         if stream:
             return await self._transport.stream("POST", _CHAT, json=body)
         return await self._transport.request("POST", _CHAT, json=body)
+
+
+class Embeddings(SyncAPIResource):
+    def create(self, *, model: str, input: Any, **params: Any) -> Any:
+        """Create embeddings for ``input`` (string, string[], int[], or int[][];
+        must be non-empty). Optional params: encoding_format, dimensions, user.
+
+        Billed on input tokens only; no streaming. The response is the upstream
+        OpenAI shape verbatim.
+        """
+        return self._transport.request("POST", _EMBEDDINGS, json={"model": model, "input": input, **clean(**params)})
+
+
+class AsyncEmbeddings(AsyncAPIResource):
+    async def create(self, *, model: str, input: Any, **params: Any) -> Any:
+        return await self._transport.request("POST", _EMBEDDINGS, json={"model": model, "input": input, **clean(**params)})
 
 
 class Messages(SyncAPIResource):

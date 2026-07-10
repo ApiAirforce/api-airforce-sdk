@@ -18,10 +18,12 @@ from .auth import (
 from .catalog import AsyncModels, Models
 from .inference import (
     AsyncChat,
+    AsyncEmbeddings,
     AsyncGemini,
     AsyncMessages,
     AsyncResponses,
     Chat,
+    Embeddings,
     Gemini,
     Messages,
     Responses,
@@ -29,19 +31,26 @@ from .inference import (
 from .media import (
     AsyncAudio,
     AsyncImages,
+    AsyncThreeD,
     AsyncVideo,
     AsyncVoices,
     Audio,
     Images,
+    ThreeD,
     Video,
     Voices,
 )
+from .notifications import AsyncNotifications, Notifications
+from .org import AsyncOrg, Org
 
 __all__ = [
-    "Chat", "AsyncChat", "Messages", "AsyncMessages", "Responses", "AsyncResponses",
+    "Chat", "AsyncChat", "Embeddings", "AsyncEmbeddings",
+    "Messages", "AsyncMessages", "Responses", "AsyncResponses",
     "Gemini", "AsyncGemini",
     "Models", "AsyncModels", "Images", "AsyncImages", "Audio", "AsyncAudio",
-    "Video", "AsyncVideo", "Voices", "AsyncVoices", "Account", "AsyncAccount",
+    "Video", "AsyncVideo", "ThreeD", "AsyncThreeD", "Voices", "AsyncVoices",
+    "Account", "AsyncAccount",
     "Keys", "AsyncKeys", "Billing", "AsyncBilling", "TwoFactor", "AsyncTwoFactor",
     "Auth", "AsyncAuth", "OAuth", "AsyncOAuth", "create_pkce_pair",
+    "Notifications", "AsyncNotifications", "Org", "AsyncOrg",
 ]

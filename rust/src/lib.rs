@@ -24,6 +24,7 @@ mod sse;
 pub use client::{Client, ClientBuilder};
 pub use error::{ApiError, Error, Result};
 pub use resources::{
-    create_pkce_pair, Account, Audio, Auth, AuthorizeParams, Billing, Chat, Gemini, Images, Keys,
-    Messages, Models, OAuth, PkcePair, Responses, TwoFactor, Video, Voices,
+    create_pkce_pair, Account, Audio, Auth, AuthorizeParams, Billing, Chat, Embeddings, Gemini,
+    Images, Keys, Messages, Models, Notifications, OAuth, Org, PkcePair, Responses, ThreeD,
+    TwoFactor, Video, Voices,
 };

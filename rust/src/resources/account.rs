@@ -182,6 +182,92 @@ impl Account<'_> {
             )
             .await
     }
+    /// Pin models to a routing category — `PUT /api/user/routing-category-prefs`
+    /// with `{model: category_id}`.
+    pub async fn set_routing_category_prefs(&self, prefs: impl Serialize) -> Result<Value> {
+        self.client
+            .request_json(
+                Method::PUT,
+                "/api/user/routing-category-prefs",
+                "api_key",
+                Some(serde_json::to_value(prefs)?),
+            )
+            .await
+    }
+    /// Per-model channel try-order — `PUT /api/user/channel-order-prefs` with
+    /// `{model: {order: string[], auto_fallback?}}`.
+    pub async fn set_channel_order_prefs(&self, prefs: impl Serialize) -> Result<Value> {
+        self.client
+            .request_json(
+                Method::PUT,
+                "/api/user/channel-order-prefs",
+                "api_key",
+                Some(serde_json::to_value(prefs)?),
+            )
+            .await
+    }
+    pub async fn get_custom_categories(&self) -> Result<Value> {
+        self.client
+            .get_json("/api/user/custom-categories", "api_key", None)
+            .await
+    }
+    /// Replace the caller's custom routing categories (max 20) —
+    /// `PUT /api/user/custom-categories` with a `RoutingCategory[]`.
+    pub async fn set_custom_categories(&self, categories: impl Serialize) -> Result<Value> {
+        self.client
+            .request_json(
+                Method::PUT,
+                "/api/user/custom-categories",
+                "api_key",
+                Some(serde_json::to_value(categories)?),
+            )
+            .await
+    }
+    /// Routing categories selectable for a model —
+    /// `GET /api/user/routing-categories?model=` → `{categories}`.
+    pub async fn routing_categories(&self, model: &str) -> Result<Value> {
+        self.client
+            .get_json(
+                "/api/user/routing-categories",
+                "api_key",
+                Some(&[("model".to_string(), model.to_string())]),
+            )
+            .await
+    }
+    /// Register a custom provider model — `POST /api/models` with
+    /// `{fake_name, endpoint, api_key?, …}` (endpoint is SSRF-validated).
+    pub async fn create_custom_model(&self, request: impl Serialize) -> Result<Value> {
+        self.client
+            .request_json(
+                Method::POST,
+                "/api/models",
+                "session",
+                Some(serde_json::to_value(request)?),
+            )
+            .await
+    }
+    /// Update a custom provider model — `PUT /api/models/{name}`.
+    pub async fn update_custom_model(&self, name: &str, request: impl Serialize) -> Result<Value> {
+        self.client
+            .request_json(
+                Method::PUT,
+                &format!("/api/models/{}", enc(name)),
+                "session",
+                Some(serde_json::to_value(request)?),
+            )
+            .await
+    }
+    /// Delete a custom provider model — `DELETE /api/models/{name}`.
+    pub async fn delete_custom_model(&self, name: &str) -> Result<Value> {
+        self.client
+            .request_json(
+                Method::DELETE,
+                &format!("/api/models/{}", enc(name)),
+                "session",
+                None,
+            )
+            .await
+    }
     pub async fn sessions(&self) -> Result<Value> {
         self.client
             .get_json("/api/me/sessions", "session", None)
@@ -238,6 +324,34 @@ impl Account<'_> {
     pub async fn toggle_pay_as_you_go(&self) -> Result<Value> {
         self.client
             .request_json(Method::POST, "/api/pay-as-you-go/toggle", "session", None)
+            .await
+    }
+    /// Soft-close the calling account — `DELETE /api/me/account`.
+    ///
+    /// Re-authenticates in the body: `password` is required and `totp_code`
+    /// is required when 2FA is enrolled (400 `totp_required` otherwise; 401
+    /// `invalid_credentials` on bad re-auth). Revokes every session and OAuth
+    /// token, rotates the primary API key, disables secondary keys and
+    /// cancels subscriptions. The remaining balance is forfeited **only**
+    /// when `forfeit_balance_ack` is `true` (never auto-refunded). Idempotent
+    /// — a repeat call returns `{closed: true}`. The account can be restored
+    /// within a 14-day grace window via
+    /// [`Auth::reactivate`](crate::Auth::reactivate).
+    pub async fn close_account(
+        &self,
+        password: &str,
+        totp_code: Option<&str>,
+        forfeit_balance_ack: bool,
+    ) -> Result<Value> {
+        let mut body = json!({
+            "password": password,
+            "forfeit_balance_ack": forfeit_balance_ack,
+        });
+        if let Some(code) = totp_code {
+            body["totp_code"] = json!(code);
+        }
+        self.client
+            .request_json(Method::DELETE, "/api/me/account", "session", Some(body))
             .await
     }
 }

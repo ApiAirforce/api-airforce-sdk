@@ -7,13 +7,17 @@ import { Chat } from "./resources/chat";
 import { Messages } from "./resources/messages";
 import { Responses } from "./resources/responses";
 import { Gemini } from "./resources/gemini";
+import { Embeddings } from "./resources/embeddings";
 import { Models } from "./resources/models";
 import { Images } from "./resources/images";
 import { Audio } from "./resources/audio";
 import { Video } from "./resources/video";
+import { ThreeD } from "./resources/threed";
 import { Voices } from "./resources/voices";
 import { Account } from "./resources/account";
 import { Keys } from "./resources/keys";
+import { Orgs } from "./resources/org";
+import { Notifications } from "./resources/notifications";
 import { Billing } from "./resources/billing";
 import { TwoFactor } from "./resources/twofa";
 import { Auth } from "./resources/auth";
@@ -70,6 +74,8 @@ export class Airforce {
   readonly responses: Responses;
   /** Google Gemini-compatible generation (`/v1beta`). */
   readonly gemini: Gemini;
+  /** OpenAI-compatible embeddings (`/v1/embeddings`). */
+  readonly embeddings: Embeddings;
   /** Model catalog & discovery. */
   readonly models: Models;
   /** Image generation. */
@@ -78,12 +84,18 @@ export class Airforce {
   readonly audio: Audio;
   /** Async video generation. */
   readonly video: Video;
+  /** Async 3D model generation (`/v1/3d`). */
+  readonly threed: ThreeD;
   /** Voice cloning. */
   readonly voices: Voices;
-  /** Account self-service (profile, prefs, sessions). */
+  /** Account self-service (profile, prefs, sessions, routing, closure). */
   readonly account: Account;
   /** API key provisioning. */
   readonly keys: Keys;
+  /** Organization self-service (members, invites, org keys, usage). */
+  readonly org: Orgs;
+  /** Notification prefs, in-app feed, delivery-channel linking. */
+  readonly notifications: Notifications;
   /** Billing, plans, public analytics. */
   readonly billing: Billing;
   /** Two-factor authentication. */
@@ -122,13 +134,17 @@ export class Airforce {
     this.messages = new Messages(this.transport);
     this.responses = new Responses(this.transport);
     this.gemini = new Gemini(this.transport);
+    this.embeddings = new Embeddings(this.transport);
     this.models = new Models(this.transport);
     this.images = new Images(this.transport);
     this.audio = new Audio(this.transport);
     this.video = new Video(this.transport);
+    this.threed = new ThreeD(this.transport);
     this.voices = new Voices(this.transport);
     this.account = new Account(this.transport);
     this.keys = new Keys(this.transport);
+    this.org = new Orgs(this.transport);
+    this.notifications = new Notifications(this.transport);
     this.billing = new Billing(this.transport);
     this.twofa = new TwoFactor(this.transport);
     this.auth = new Auth(this.transport);

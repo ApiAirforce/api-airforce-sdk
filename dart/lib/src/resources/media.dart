@@ -111,6 +111,64 @@ class Video {
   }
 }
 
+/// Async 3D generation — `/v1/3d/*`.
+///
+/// Mirrors the video task model: submit, poll, then download the artifact.
+/// Credits are deducted only when the worker picks up the task (failures are
+/// refunded); tasks and their stored artifacts expire after 24 h.
+class ThreeD {
+  static const _terminal = {'completed', 'failed', 'expired'};
+  final Transport _t;
+  ThreeD(this._t);
+
+  /// `{model, image_urls?: [http(s) URL or data: URI, ≤4], resolution?:
+  /// 'low'|'medium'|'high', prompt?, ...extra}` → a `Task3D` (status
+  /// `queued`). Image-to-3D models require at least one `image_urls` entry.
+  Future<dynamic> generate(Map<String, dynamic> request) =>
+      _t.post('/v1/3d/generations', 'api_key', request);
+
+  Future<dynamic> getTask(String id) => _t.get('/v1/3d/tasks/${_enc(id)}', 'api_key');
+
+  Future<dynamic> listTasks() async {
+    final res = await _t.get('/v1/3d/tasks', 'api_key');
+    return res is Map && res.containsKey('data') ? res['data'] : res;
+  }
+
+  /// Download the finished model artifact (glb/ply bytes). 404 until the
+  /// task's `has_result` is true.
+  Future<List<int>> content(String id) => _t.getBytes('/v1/3d/tasks/${_enc(id)}/content', 'api_key');
+
+  Future<dynamic> deleteTask(String id) => _t.delete('/v1/3d/tasks/${_enc(id)}', 'api_key');
+
+  /// Poll a task until it reaches a terminal state.
+  Future<dynamic> waitForCompletion(String id,
+      {Duration pollInterval = const Duration(milliseconds: 2500),
+      Duration timeout = const Duration(minutes: 10)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (true) {
+      final task = await getTask(id);
+      final status = task is Map ? task['status'] as String? ?? '' : '';
+      if (status == 'completed') return task;
+      if (_terminal.contains(status)) {
+        throw AirforceException('3D task $id ended with status $status', code: status);
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        throw AirforceException('timed out waiting for 3D task $id', code: 'wait_timeout');
+      }
+      await Future<void>.delayed(pollInterval);
+    }
+  }
+
+  Future<dynamic> generateAndWait(Map<String, dynamic> request,
+      {Duration pollInterval = const Duration(milliseconds: 2500),
+      Duration timeout = const Duration(minutes: 10)}) async {
+    final task = await generate(request);
+    final id = task is Map ? task['task_id'] as String? : null;
+    if (id == null) throw AirforceException('3D task response had no task_id');
+    return waitForCompletion(id, pollInterval: pollInterval, timeout: timeout);
+  }
+}
+
 /// Voice cloning — `/v1/voices/*`.
 class Voices {
   final Transport _t;

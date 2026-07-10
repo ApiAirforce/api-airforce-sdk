@@ -56,6 +56,16 @@ type Usage struct {
 
 // --- chat --------------------------------------------------------------------
 
+// ReasoningConfig shapes how reasoning appears in the response. It is consumed
+// server-side and never forwarded upstream. Format "separate" moves reasoning
+// into message.reasoning / delta.reasoning and strips it from content;
+// Exclude true drops reasoning from the response entirely; absent or Format
+// "inline" keeps reasoning wrapped in <think>...</think> inside content.
+type ReasoningConfig struct {
+	Format  string `json:"format,omitempty"` // "separate" | "inline"
+	Exclude bool   `json:"exclude,omitempty"`
+}
+
 // ChatCompletionParams is the request for Chat.Create.
 type ChatCompletionParams struct {
 	Model           string        `json:"model"`
@@ -70,6 +80,8 @@ type ChatCompletionParams struct {
 	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
 	Thinking        any           `json:"thinking,omitempty"`
 	ThinkingBudget  int           `json:"thinking_budget,omitempty"`
+	// Reasoning controls response-side reasoning shaping (see ReasoningConfig).
+	Reasoning *ReasoningConfig `json:"reasoning,omitempty"`
 	// Models is the airforce fallback array (up to 3).
 	Models     []string `json:"models,omitempty"`
 	Skill      string   `json:"skill,omitempty"`
@@ -251,4 +263,50 @@ func (s *GeminiService) GenerateContent(ctx context.Context, model string, param
 // StreamGenerateContent performs a streaming Gemini streamGenerateContent.
 func (s *GeminiService) StreamGenerateContent(ctx context.Context, model string, params map[string]any) (*Stream[map[string]any], error) {
 	return doStream[map[string]any](ctx, s.client, geminiPath(model, "streamGenerateContent"), "api_key", params)
+}
+
+// --- embeddings ----------------------------------------------------------------
+
+// EmbeddingsParams is the request for Embeddings.Create. Input is a string, a
+// []string, a []int token array, or a [][]int batch of token arrays, and must
+// be non-empty.
+type EmbeddingsParams struct {
+	Model          string `json:"model"`
+	Input          any    `json:"input"`
+	EncodingFormat string `json:"encoding_format,omitempty"`
+	Dimensions     int    `json:"dimensions,omitempty"`
+	User           string `json:"user,omitempty"`
+}
+
+// EmbeddingObject is one embedding vector. Embedding is a []float64 by default
+// or a base64 string when encoding_format is "base64".
+type EmbeddingObject struct {
+	Object    string `json:"object"`
+	Index     int    `json:"index"`
+	Embedding any    `json:"embedding"`
+}
+
+// EmbeddingsUsage holds token accounting for an embeddings request.
+type EmbeddingsUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+// EmbeddingsResponse is the result of Embeddings.Create.
+type EmbeddingsResponse struct {
+	Object string            `json:"object"`
+	Data   []EmbeddingObject `json:"data"`
+	Model  string            `json:"model"`
+	Usage  *EmbeddingsUsage  `json:"usage,omitempty"`
+}
+
+// EmbeddingsService accesses /v1/embeddings.
+type EmbeddingsService struct{ client *Client }
+
+// Create computes embeddings for the input with smart routing + provider
+// fallback. Billed on input tokens only; no streaming variant exists.
+func (s *EmbeddingsService) Create(ctx context.Context, params EmbeddingsParams) (*EmbeddingsResponse, error) {
+	var out EmbeddingsResponse
+	err := s.client.postJSON(ctx, "/v1/embeddings", "api_key", params, &out)
+	return &out, err
 }

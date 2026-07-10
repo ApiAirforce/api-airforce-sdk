@@ -68,6 +68,13 @@ public sealed class AuthResource : Resource
     public Task<JsonNode?> ResendVerificationAsync(string identifier, CancellationToken ct = default)
         => Transport.PostAsync("/auth/resend-verification", "none", new { identifier }, ct);
 
+    /// <summary>Reactivate a soft-closed account within the 14-day grace window, using the
+    /// account's pre-close email + password. Returns <c>{reactivated, email_restored,
+    /// username_restored}</c>. No session is minted — log in normally afterwards.
+    /// Rate-limited like login (429 with <c>retry_after</c> on lockout).</summary>
+    public Task<JsonNode?> ReactivateAsync(string email, string password, CancellationToken ct = default)
+        => Transport.PostAsync("/auth/reactivate", "none", new { email, password }, ct);
+
     public async Task<JsonNode?> LogoutAsync(CancellationToken ct = default)
     {
         var result = await Transport.PostAsync("/auth/logout", "session", null, ct).ConfigureAwait(false);

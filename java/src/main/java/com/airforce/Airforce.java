@@ -23,12 +23,16 @@ public final class Airforce {
   private final MessagesResource messages;
   private final ResponsesResource responses;
   private final GeminiResource gemini;
+  private final EmbeddingsResource embeddings;
   private final ModelsResource models;
   private final ImagesResource images;
   private final AudioResource audio;
   private final VideoResource video;
+  private final ThreeDResource threeD;
   private final VoicesResource voices;
   private final AccountResource account;
+  private final NotificationsResource notifications;
+  private final OrgResource org;
   private final KeysResource keys;
   private final BillingResource billing;
   private final TwoFactorResource twofa;
@@ -55,12 +59,16 @@ public final class Airforce {
     this.messages = new MessagesResource(transport);
     this.responses = new ResponsesResource(transport);
     this.gemini = new GeminiResource(transport);
+    this.embeddings = new EmbeddingsResource(transport);
     this.models = new ModelsResource(transport);
     this.images = new ImagesResource(transport);
     this.audio = new AudioResource(transport);
     this.video = new VideoResource(transport);
+    this.threeD = new ThreeDResource(transport);
     this.voices = new VoicesResource(transport);
     this.account = new AccountResource(transport);
+    this.notifications = new NotificationsResource(transport);
+    this.org = new OrgResource(transport);
     this.keys = new KeysResource(transport);
     this.billing = new BillingResource(transport);
     this.twofa = new TwoFactorResource(transport);
@@ -88,6 +96,10 @@ public final class Airforce {
     return gemini;
   }
 
+  public EmbeddingsResource embeddings() {
+    return embeddings;
+  }
+
   public ModelsResource models() {
     return models;
   }
@@ -104,12 +116,24 @@ public final class Airforce {
     return video;
   }
 
+  public ThreeDResource threeD() {
+    return threeD;
+  }
+
   public VoicesResource voices() {
     return voices;
   }
 
   public AccountResource account() {
     return account;
+  }
+
+  public NotificationsResource notifications() {
+    return notifications;
+  }
+
+  public OrgResource org() {
+    return org;
   }
 
   public KeysResource keys() {

@@ -144,6 +144,9 @@ impl Client {
     pub fn gemini(&self) -> Gemini<'_> {
         Gemini { client: self }
     }
+    pub fn embeddings(&self) -> Embeddings<'_> {
+        Embeddings { client: self }
+    }
     pub fn models(&self) -> Models<'_> {
         Models { client: self }
     }
@@ -156,11 +159,20 @@ impl Client {
     pub fn video(&self) -> Video<'_> {
         Video { client: self }
     }
+    pub fn three_d(&self) -> ThreeD<'_> {
+        ThreeD { client: self }
+    }
     pub fn voices(&self) -> Voices<'_> {
         Voices { client: self }
     }
     pub fn account(&self) -> Account<'_> {
         Account { client: self }
+    }
+    pub fn org(&self) -> Org<'_> {
+        Org { client: self }
+    }
+    pub fn notifications(&self) -> Notifications<'_> {
+        Notifications { client: self }
     }
     pub fn keys(&self) -> Keys<'_> {
         Keys { client: self }

@@ -19,12 +19,16 @@ public sealed class AirforceClient : IDisposable
     public MessagesResource Messages { get; }
     public ResponsesResource Responses { get; }
     public GeminiResource Gemini { get; }
+    public EmbeddingsResource Embeddings { get; }
     public ModelsResource Models { get; }
     public ImagesResource Images { get; }
     public AudioResource Audio { get; }
     public VideoResource Video { get; }
+    public ThreeDResource ThreeD { get; }
     public VoicesResource Voices { get; }
     public AccountResource Account { get; }
+    public NotificationsResource Notifications { get; }
+    public OrgResource Org { get; }
     public KeysResource Keys { get; }
     public BillingResource Billing { get; }
     public TwoFactorResource TwoFactor { get; }
@@ -54,12 +58,16 @@ public sealed class AirforceClient : IDisposable
         Messages = new MessagesResource(_transport);
         Responses = new ResponsesResource(_transport);
         Gemini = new GeminiResource(_transport);
+        Embeddings = new EmbeddingsResource(_transport);
         Models = new ModelsResource(_transport);
         Images = new ImagesResource(_transport);
         Audio = new AudioResource(_transport);
         Video = new VideoResource(_transport);
+        ThreeD = new ThreeDResource(_transport);
         Voices = new VoicesResource(_transport);
         Account = new AccountResource(_transport);
+        Notifications = new NotificationsResource(_transport);
+        Org = new OrgResource(_transport);
         Keys = new KeysResource(_transport);
         Billing = new BillingResource(_transport);
         TwoFactor = new TwoFactorResource(_transport);

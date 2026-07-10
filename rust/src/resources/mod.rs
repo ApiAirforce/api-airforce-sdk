@@ -5,12 +5,16 @@ mod auth;
 mod catalog;
 mod inference;
 mod media;
+mod notifications;
+mod org;
 
 pub use account::{Account, Billing, Keys};
 pub use auth::{create_pkce_pair, Auth, AuthorizeParams, OAuth, PkcePair, TwoFactor};
 pub use catalog::Models;
-pub use inference::{Chat, Gemini, Messages, Responses};
-pub use media::{Audio, Images, Video, Voices};
+pub use inference::{Chat, Embeddings, Gemini, Messages, Responses};
+pub use media::{Audio, Images, ThreeD, Video, Voices};
+pub use notifications::Notifications;
+pub use org::Org;
 
 use crate::error::Result;
 use serde::Serialize;

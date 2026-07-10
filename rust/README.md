@@ -6,13 +6,19 @@ OpenAI-compatible API in front of many model providers. Async (Tokio + reqwest),
 
 ## Install
 
+The crate is not yet published to crates.io — install it straight from the Git
+repository (Cargo locates the `airforce` package inside the repo automatically):
+
 ```toml
 [dependencies]
-airforce = "0.0.1"
+airforce = { git = "https://github.com/ApiAirforce/api-airforce-sdk" }
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 futures = "0.3"
 ```
+
+Pin a revision with `rev = "<commit>"` (or `branch = "main"`) for reproducible
+builds.
 
 ## Quick start
 
@@ -63,6 +69,31 @@ client.chat().create(json!({
 })).await?;
 ```
 
+## Reasoning output shaping
+
+By default, models that think emit `<think>…</think>` blocks inline in `content`.
+The `reasoning` request field reshapes that server-side (it is never forwarded
+upstream):
+
+```rust
+client.chat().create(json!({
+    "model": "claude-opus-4.8",
+    "messages": [{ "role": "user", "content": "Why is the sky blue?" }],
+    "reasoning": { "format": "separate" }, // → message.reasoning / delta.reasoning
+    // or: "reasoning": { "exclude": true }    // drop reasoning entirely
+})).await?;
+```
+
+## Embeddings
+
+```rust
+let res = client.embeddings().create(json!({
+    "model": "text-embed-1",
+    "input": ["first text", "second text"], // string | string[] | tokens
+})).await?;
+println!("{} vectors", res["data"].as_array().unwrap().len());
+```
+
 ## Media
 
 ```rust
@@ -81,6 +112,13 @@ let video = client.video()
     .generate_and_wait(json!({ "model": "veo-3", "prompt": "a paper plane over a city" }),
         Duration::from_millis(2500), Duration::from_secs(600)).await?;
 println!("{}", video["result_url"]);
+
+// 3D (async — poll, then download the glb/ply artifact)
+let task = client.three_d()
+    .generate_and_wait(json!({ "model": "shape-1", "prompt": "a toy biplane" }),
+        Duration::from_millis(2500), Duration::from_secs(600)).await?;
+let bytes = client.three_d().content(task["task_id"].as_str().unwrap()).await?;
+std::fs::write("model.glb", bytes)?;
 ```
 
 ## Account, keys & billing
@@ -98,6 +136,51 @@ let key = client.keys().create(json!({ "label": "ci", "rpm_limit": 60 })).await?
 
 You can also pass a token: `Client::builder().session_token(jwt).build()` or
 `client.set_session_token(Some(jwt))`.
+
+Routing preferences (API-key-authed) live on the same resource:
+`set_routing_category_prefs`, `set_channel_order_prefs`,
+`get_custom_categories` / `set_custom_categories`, `routing_categories(model)`,
+plus custom provider model CRUD (`create_custom_model` / `update_custom_model` /
+`delete_custom_model`).
+
+### Account closure
+
+```rust
+// Soft-close (re-auth in the body; balance forfeited only when acknowledged)
+client.account().close_account("password", Some("123456"), false).await?;
+
+// ...restore within the 14-day grace window (no session minted):
+client.auth().reactivate("former@email.com", "password").await?;
+```
+
+## Organizations
+
+Team self-service (session JWT; the org context is implicit via membership):
+
+```rust
+let org = client.org().get().await?;               // {org, role}
+let members = client.org().members().await?;       // owner/admin
+client.org().create_invite(json!({ "email": "dev@example.com" })).await?;
+let key = client.org().create_key(json!({ "member_user_id": "u_123", "label": "ci" })).await?;
+let usage = client.org().usage(&[("from", "1750000000")]).await?;
+```
+
+## Notifications
+
+Preferences, the in-app feed, and delivery-channel linking (session JWT):
+
+```rust
+let feed = client.notifications().list(Some(30), None).await?; // {items, unread}
+client.notifications().mark_all_read().await?;
+
+client.notifications().update_prefs(json!({
+    "price_drop": { "enabled": true, "scope": "watchlist_only" },
+})).await?;
+
+// Link a delivery channel (code arrives through the channel itself)
+client.notifications().link_channel(json!({ "channel": "email", "address": "me@example.com" })).await?;
+client.notifications().verify_channel("email", "123456").await?;
+```
 
 ## OAuth (third-party integrators)
 

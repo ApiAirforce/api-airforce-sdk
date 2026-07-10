@@ -101,4 +101,79 @@ void main() {
     }
     expect(text.toString(), 'hello');
   });
+
+  test('embeddings.create posts to /v1/embeddings and parses vectors', () async {
+    const body = '{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],'
+        '"model":"text-embedding-3-small","usage":{"prompt_tokens":2,"total_tokens":2}}';
+    final mock = MockClient((req) => streamed(200, body));
+    final res = await client(mock).embeddings.create({
+      'model': 'text-embedding-3-small',
+      'input': ['hello', 'world'],
+    });
+    expect(res['data'][0]['embedding'], [0.1, 0.2]);
+    expect(res['usage']['total_tokens'], 2);
+    expect(mock.requests.last.url.path, '/v1/embeddings');
+    expect(mock.requests.last.headers['authorization'], 'Bearer sk-air-test');
+  });
+
+  test('org.members unwraps the members array and uses the session token', () async {
+    const body = '{"members":[{"user_id":"u1","role":"owner","status":"active","joined_at":0}]}';
+    final mock = MockClient((req) => streamed(200, body));
+    final c = client(mock)..setSessionToken('jwt-1');
+    final members = await c.org.members();
+    expect(members, isA<List<dynamic>>());
+    expect(members[0]['role'], 'owner');
+    expect(mock.requests.last.url.path, '/api/org/members');
+    expect(mock.requests.last.headers['authorization'], 'Bearer jwt-1');
+  });
+
+  test('notifications.list passes paging query and keeps the unread count', () async {
+    const body = '{"items":[{"id":"n1","event_id":"e1","kind":"price_drop","params_json":"{}",'
+        '"created_at":"2026-07-01T00:00:00Z"}],"unread":1}';
+    final mock = MockClient((req) => streamed(200, body));
+    final c = client(mock)..setSessionToken('jwt-1');
+    final res = await c.notifications.list(limit: 10, before: '2026-07-01T00:00:00Z');
+    expect(res['unread'], 1);
+    expect(res['items'][0]['id'], 'n1');
+    final url = mock.requests.last.url;
+    expect(url.path, '/api/me/notifications');
+    expect(url.queryParameters['limit'], '10');
+    expect(url.queryParameters['before'], '2026-07-01T00:00:00Z');
+  });
+
+  test('account.closeAccount sends DELETE with the re-auth body', () async {
+    final mock = MockClient((req) => streamed(200, '{"closed":true}'));
+    final c = client(mock)..setSessionToken('jwt-1');
+    final res = await c.account.closeAccount(password: 'pw', totpCode: '123456');
+    expect(res['closed'], true);
+    final req = mock.requests.last as http.Request;
+    expect(req.method, 'DELETE');
+    expect(req.url.path, '/api/me/account');
+    final sent = jsonDecode(req.body) as Map<String, dynamic>;
+    expect(sent['password'], 'pw');
+    expect(sent['totp_code'], '123456');
+    expect(sent.containsKey('forfeit_balance_ack'), isFalse);
+  });
+
+  test('threeD.generateAndWait polls until the task completes', () async {
+    var polls = 0;
+    final mock = MockClient((req) {
+      if (req.method == 'POST') {
+        return streamed(200,
+            '{"task_id":"t3d_1","status":"queued","model":"m3d","created":0,"has_result":false}');
+      }
+      polls++;
+      return polls < 2
+          ? streamed(200, '{"task_id":"t3d_1","status":"processing","has_result":false}')
+          : streamed(200, '{"task_id":"t3d_1","status":"completed","has_result":true,"format":"glb"}');
+    });
+    final task = await client(mock).threeD.generateAndWait({
+      'model': 'm3d',
+      'image_urls': ['https://example.com/toy.png'],
+    }, pollInterval: Duration.zero);
+    expect(task['status'], 'completed');
+    expect(task['format'], 'glb');
+    expect(mock.requests.first.url.path, '/v1/3d/generations');
+    expect(mock.requests.last.url.path, '/v1/3d/tasks/t3d_1');
+  });
 }

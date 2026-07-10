@@ -318,6 +318,109 @@ func (s *VideoService) GenerateAndWait(ctx context.Context, params VideoParams, 
 	return s.WaitForCompletion(ctx, task.TaskID, pollInterval, timeout)
 }
 
+// --- 3d ------------------------------------------------------------------------
+
+// ThreeDParams is the request for ThreeD.Generate. ImageURLs entries are
+// http(s) URLs or data: URIs (max 4); image-to-3D models require at least one.
+type ThreeDParams struct {
+	Model      string   `json:"model"`
+	ImageURLs  []string `json:"image_urls,omitempty"`
+	Resolution string   `json:"resolution,omitempty"` // "low" | "medium" | "high"
+	Prompt     string   `json:"prompt,omitempty"`
+}
+
+// ThreeDTask is an async 3D generation task. Tasks and their stored artifacts
+// expire 24 hours after creation (ExpiresAt).
+type ThreeDTask struct {
+	TaskID        string `json:"task_id"`
+	Status        string `json:"status"` // queued | processing | completed | failed | expired
+	Model         string `json:"model"`
+	Created       int64  `json:"created"`
+	Error         string `json:"error,omitempty"`
+	CostCents     *int   `json:"cost_cents,omitempty"`
+	ExpiresAt     int64  `json:"expires_at,omitempty"`
+	HasResult     bool   `json:"has_result"`
+	Format        string `json:"format,omitempty"` // "glb" | "ply", set on completion
+	Resolution    string `json:"resolution,omitempty"`
+	InputImageURL string `json:"input_image_url,omitempty"`
+}
+
+// ThreeDService accesses /v1/3d.
+type ThreeDService struct{ client *Client }
+
+// Generate creates an async 3D generation task. Credits are deducted only when
+// a worker picks up the task; failed tasks are refunded.
+func (s *ThreeDService) Generate(ctx context.Context, params ThreeDParams) (*ThreeDTask, error) {
+	var out ThreeDTask
+	err := s.client.postJSON(ctx, "/v1/3d/generations", "api_key", params, &out)
+	return &out, err
+}
+
+// GetTask returns the current state of a task (404 for foreign/missing tasks).
+func (s *ThreeDService) GetTask(ctx context.Context, id string) (*ThreeDTask, error) {
+	var out ThreeDTask
+	err := s.client.requestJSON(ctx, http.MethodGet, "/v1/3d/tasks/"+url.PathEscape(id), requestOptions{auth: "api_key"}, &out)
+	return &out, err
+}
+
+// ListTasks returns the caller's recent tasks (newest first, up to 100).
+func (s *ThreeDService) ListTasks(ctx context.Context) ([]ThreeDTask, error) {
+	var out struct {
+		Data []ThreeDTask `json:"data"`
+	}
+	err := s.client.requestJSON(ctx, http.MethodGet, "/v1/3d/tasks", requestOptions{auth: "api_key"}, &out)
+	return out.Data, err
+}
+
+// Content downloads the finished model artifact as raw bytes (glb or ply).
+// Returns 404 until the task's HasResult is true.
+func (s *ThreeDService) Content(ctx context.Context, id string) ([]byte, error) {
+	return s.client.requestBytes(ctx, http.MethodGet, "/v1/3d/tasks/"+url.PathEscape(id)+"/content", requestOptions{auth: "api_key"})
+}
+
+// DeleteTask removes a task and its artifact from history (idempotent).
+func (s *ThreeDService) DeleteTask(ctx context.Context, id string) error {
+	return s.client.requestJSON(ctx, http.MethodDelete, "/v1/3d/tasks/"+url.PathEscape(id), requestOptions{auth: "api_key"}, nil)
+}
+
+// WaitForCompletion polls a task until it reaches a terminal state.
+func (s *ThreeDService) WaitForCompletion(ctx context.Context, id string, pollInterval, timeout time.Duration) (*ThreeDTask, error) {
+	if pollInterval <= 0 {
+		pollInterval = 2500 * time.Millisecond
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		task, err := s.GetTask(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		switch task.Status {
+		case "completed":
+			return task, nil
+		case "failed", "expired":
+			return nil, &APIError{Code: task.Status, Message: "3d task " + id + " ended with status " + task.Status}
+		}
+		if time.Now().After(deadline) {
+			return nil, &APIError{Code: "wait_timeout", Message: "timed out waiting for 3d task " + id}
+		}
+		if !sleepCtx(ctx, pollInterval) {
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// GenerateAndWait creates a task and waits for completion.
+func (s *ThreeDService) GenerateAndWait(ctx context.Context, params ThreeDParams, pollInterval, timeout time.Duration) (*ThreeDTask, error) {
+	task, err := s.Generate(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	return s.WaitForCompletion(ctx, task.TaskID, pollInterval, timeout)
+}
+
 // --- voices (cloning) --------------------------------------------------------
 
 // VoiceSample is one audio sample for cloning.

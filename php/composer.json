@@ -15,6 +15,9 @@
       "Airforce\\": "src/"
     }
   },
+  "scripts": {
+    "test": "php tests/run.php"
+  },
   "config": {
     "sort-packages": true
   }

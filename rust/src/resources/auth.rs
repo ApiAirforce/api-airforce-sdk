@@ -181,6 +181,21 @@ impl Auth<'_> {
         self.client.set_session_token(None);
         Ok(result)
     }
+
+    /// Reactivate a soft-closed account within the 14-day grace window —
+    /// `POST /auth/reactivate`. Public by necessity (a closed account has no
+    /// session); the account is identified by its **former** email +
+    /// password. Returns `{reactivated: true, email_restored,
+    /// username_restored}` — email/username are restored best-effort (409
+    /// `username_unavailable` when the name was re-registered meanwhile). No
+    /// session is minted; log in normally afterwards. Rate-limited like
+    /// login (429 with `retry_after` on lockout).
+    pub async fn reactivate(&self, email: &str, password: &str) -> Result<Value> {
+        let body = json!({ "email": email, "password": password });
+        self.client
+            .request_json(Method::POST, "/auth/reactivate", "none", Some(body))
+            .await
+    }
 }
 
 /// Inputs to [`OAuth::authorize_url`].

@@ -7,9 +7,16 @@ OpenAI-compatible API in front of many model providers. Built on `HttpClient` an
 
 ## Install
 
+The package is not published to NuGet yet — consume the project straight from the git
+repository (requires .NET 8.0+):
+
 ```bash
-dotnet add package Airforce
+git clone https://github.com/ApiAirforce/api-airforce-sdk
+dotnet add YourApp.csproj reference api-airforce-sdk/csharp/Airforce/Airforce.csproj
 ```
+
+Or add the repo as a submodule and reference `csharp/Airforce/Airforce.csproj` the same
+way.
 
 ## Quick start
 
@@ -54,6 +61,34 @@ await client.Chat.CreateAsync(new
 });
 ```
 
+## Reasoning output
+
+Reasoning models wrap their thinking in `<think>…</think>` inside `content` by default.
+The optional `reasoning` request field reshapes that server-side (it is never forwarded
+upstream): `format = "separate"` moves it into `message.reasoning` (`delta.reasoning`
+when streaming), `exclude = true` drops it entirely.
+
+```csharp
+var res = await client.Chat.CreateAsync(new
+{
+    model = "deepseek-r1",
+    messages = new[] { new { role = "user", content = "Why is the sky blue?" } },
+    reasoning = new { format = "separate" },
+});
+Console.WriteLine(res!["choices"]![0]!["message"]!["reasoning"]);
+```
+
+## Embeddings
+
+```csharp
+var emb = await client.Embeddings.CreateAsync(new
+{
+    model = "text-embedding-3-small",
+    input = new[] { "first text", "second text" },
+});
+var vector = emb!["data"]![0]!["embedding"]; // billed on input tokens only
+```
+
 ## Media
 
 ```csharp
@@ -70,7 +105,20 @@ await File.WriteAllBytesAsync("out.mp3", audio);
 // Video (async — poll until done)
 var video = await client.Video.GenerateAndWaitAsync(new { model = "veo-3", prompt = "a paper plane over a city" });
 Console.WriteLine(video!["result_url"]!.GetValue<string>());
+
+// 3D (async — poll until done, then download the model file)
+var task = await client.ThreeD.GenerateAndWaitAsync(new
+{
+    model = "trellis-2",
+    image_urls = new[] { "https://example.com/chair.png" },
+    resolution = "medium",
+});
+byte[] glb = await client.ThreeD.DownloadAsync(task!["task_id"]!.GetValue<string>());
+await File.WriteAllBytesAsync("chair.glb", glb);
 ```
+
+3D tasks are billed only once a worker claims them (failures are refunded) and expire —
+together with their artifacts — after 24 hours.
 
 ## Account, keys & billing
 
@@ -87,6 +135,78 @@ var key = await client.Keys.CreateAsync(new { label = "ci", rpm_limit = 60 });
 
 You can also pass a token: `new ClientOptions { SessionToken = jwt }` or
 `client.SetSessionToken(jwt)`.
+
+### Routing preferences
+
+Per-user routing controls (API-key-authenticated) live on `client.Account`:
+
+```csharp
+await client.Account.SetRoutingCategoryPrefsAsync(new Dictionary<string, string>
+{
+    ["claude-opus-4.8"] = "fast-lane",
+});
+await client.Account.SetChannelOrderPrefsAsync(new Dictionary<string, object>
+{
+    ["claude-opus-4.8"] = new { order = new[] { "alpha", "beta" }, auto_fallback = true },
+});
+var categories = await client.Account.RoutingCategoriesAsync("claude-opus-4.8");
+await client.Account.SetCustomCategoriesAsync(myCategories); // max 20
+```
+
+Custom provider models (bring your own endpoint, session-authenticated):
+
+```csharp
+await client.Account.CreateCustomModelAsync(new { fake_name = "my-model", endpoint = "https://my-host/v1/chat/completions" });
+await client.Account.UpdateCustomModelAsync("my-model", new { endpoint = "https://other-host/v1/chat/completions" });
+await client.Account.DeleteCustomModelAsync("my-model");
+```
+
+### Account closure
+
+```csharp
+// Soft-close: re-authenticates in the body; revokes sessions/OAuth tokens, rotates the
+// primary key, disables secondary keys, cancels subscriptions. Idempotent.
+await client.Account.CloseAccountAsync("password", totpCode: "123456");
+
+// Undo within the 14-day grace window (public endpoint, former email + password):
+await client.Auth.ReactivateAsync("me@example.com", "password");
+```
+
+## Notifications
+
+Preferences, the in-app feed, and delivery-channel linking (session token):
+
+```csharp
+var prefs = await client.Notifications.GetPrefsAsync();
+await client.Notifications.UpdatePrefsAsync(new { digest_frequency = "daily" });
+
+var feed = await client.Notifications.ListAsync(limit: 50);
+await client.Notifications.MarkAllReadAsync();
+
+await client.Notifications.LinkChannelAsync("email", "me@example.com");
+await client.Notifications.VerifyChannelAsync("email", "123456");
+await client.Notifications.UnlinkChannelAsync("email");
+```
+
+## Organizations
+
+Team self-service under `/api/org/*` (session token; the org context comes from the
+caller's membership). Roles: owner > admin > member.
+
+```csharp
+var org = await client.Org.GetAsync();                 // {org, role}
+var members = await client.Org.MembersAsync();
+
+var invite = await client.Org.CreateInviteAsync("dev@example.com", role: "member");
+Console.WriteLine(invite!["invite_url"]);              // reliable delivery path
+
+// Org keys bill the org owner's wallet; the full key is shown once at create.
+var created = await client.Org.CreateKeyAsync(new { member_user_id = "u_123", label = "ci" });
+var keys = await client.Org.KeysAsync();               // masked
+
+var usage = await client.Org.UsageAsync(from: 1750000000, to: 1750604800);
+Console.WriteLine(usage!["total"]!["cost_cents"]);     // cents
+```
 
 ## OAuth (third-party integrators)
 

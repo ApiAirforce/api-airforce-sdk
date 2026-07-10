@@ -141,6 +141,32 @@ export class Auth extends APIResource {
     });
   }
 
+  /**
+   * Reactivate a soft-closed account within the 14-day grace window, using
+   * the account's former email + password. Public by necessity (a closed
+   * account has no session) and rate-limited like login (429 with
+   * `retry_after` on lockout). Email/username are restored best-effort —
+   * `email_restored` / `username_restored` report whether each was still
+   * free (409 `username_unavailable` / `not_reactivatable` otherwise). No
+   * session is minted; log in normally afterwards.
+   */
+  reactivate(
+    body: { email: string; password: string },
+    options: RequestConfig = {},
+  ): Promise<{
+    reactivated: boolean;
+    email_restored: boolean;
+    username_restored: boolean;
+  }> {
+    return this.transport.request({
+      method: "POST",
+      path: "/auth/reactivate",
+      auth: "none",
+      body,
+      ...options,
+    });
+  }
+
   /** Invalidate the current session and clear the local session token. */
   async logout(options: RequestConfig = {}): Promise<{ ok: boolean }> {
     const result = await this.transport.request<{ ok: boolean }>({

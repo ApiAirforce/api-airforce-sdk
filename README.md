@@ -7,9 +7,10 @@
 One OpenAI-compatible API in front of many model providers — with usage-based billing,
 smart routing, provider fallback, and media generation.
 
+[![CI](https://github.com/ApiAirforce/api-airforce-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/ApiAirforce/api-airforce-sdk/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![OpenAI compatible](https://img.shields.io/badge/API-OpenAI%20compatible-412991.svg)](docs/API_SURFACE.md)
-[![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Python%20%7C%20Go%20%7C%20Java-success.svg)](#languages)
+[![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Python%20%7C%20Go%20%7C%20Java%20%7C%20C%23%20%7C%20Rust%20%7C%20Dart%20%7C%20PHP-success.svg)](#languages)
 
 </div>
 
@@ -26,8 +27,13 @@ existing client at it — but these SDKs add the gateway-specific power on top:
   channel/category preferences are respected.
 - 🌊 **Streaming** — chat, messages, responses, gemini and video, exposed as native
   iterators in every language.
-- 🎨 **Media** — image, audio (TTS / music / SFX / transcription / dubbing), video and voice
-  cloning.
+- 🧮 **Embeddings** — OpenAI-compatible `/v1/embeddings` with the same smart routing and
+  fallback, billed on input tokens only.
+- 🎨 **Media** — image, audio (TTS / music / SFX / transcription / dubbing), video, 3D
+  generation and voice cloning.
+- 🔔 **Notifications** — preferences, the in-app feed, and delivery-channel linking.
+- 🏢 **Organizations** — team self-service: members, roles, invites, org-scoped API keys
+  and per-member usage.
 - 👤 **Full account surface** — usage, billing, API-key provisioning, 2FA, OAuth.
 - 💸 **Usage & cost** — every response carries a `usage.cost` in credits.
 
@@ -44,8 +50,31 @@ existing client at it — but these SDKs add the gateway-specific power on top:
 | **Dart** | [`dart/`](dart/) | `airforce` (pub.dev) | Dart VM · Flutter |
 | **PHP** | [`php/`](php/) | `api-airforce/sdk` (Composer) | PHP 8.1+ · cURL |
 
-> **Status:** all eight implement the shared [API contract](docs/API_SURFACE.md) and ship a
-> passing test suite. Not yet published to the package registries.
+> **Status:** all eight implement the shared [API contract](docs/API_SURFACE.md) — including
+> embeddings, 3D generation, notifications and organizations — and ship a passing offline
+> test suite, run in [CI](.github/workflows/ci.yml) on every push. Not yet published to the
+> package registries — see [Installation](#installation).
+
+## Installation
+
+The packages are **not on the public registries yet** (npm, PyPI, Maven Central, NuGet,
+crates.io, pub.dev, Packagist). Until they are, install straight from this repository —
+for the clone-based rows, start with:
+
+```bash
+git clone https://github.com/ApiAirforce/api-airforce-sdk.git
+```
+
+| Language | Install from git |
+| --- | --- |
+| **TypeScript** | clone, then `npm install ./api-airforce-sdk/typescript` |
+| **Python** | `pip install "airforce-api @ git+https://github.com/ApiAirforce/api-airforce-sdk.git#subdirectory=python"` |
+| **Go** | `go get github.com/ApiAirforce/api-airforce-sdk/go` |
+| **Java** | clone, `mvn -f api-airforce-sdk/java/pom.xml install`, then depend on `com.airforce:airforce-api:0.0.1` |
+| **C#** | clone, then `dotnet add <your.csproj> reference api-airforce-sdk/csharp/Airforce/Airforce.csproj` |
+| **Rust** | in `Cargo.toml`: `airforce = { git = "https://github.com/ApiAirforce/api-airforce-sdk.git" }` |
+| **Dart** | in `pubspec.yaml`: `airforce: { git: { url: "https://github.com/ApiAirforce/api-airforce-sdk.git", path: dart } }` |
+| **PHP** | clone, then add a Composer [path repository](https://getcomposer.org/doc/05-repositories.md#path) pointing at `api-airforce-sdk/php` |
 
 ## Quickstart
 
@@ -160,7 +189,7 @@ cd go && go test ./...
 cd java && mvn test
 
 # C#
-cd csharp && dotnet test
+cd csharp && dotnet test Airforce.Tests
 
 # Rust
 cd rust && cargo test
@@ -172,9 +201,13 @@ cd dart && dart pub get && dart test
 cd php && php tests/run.php
 ```
 
+All test suites run offline (HTTP transports are mocked — no API key or network needed).
+The same commands run in [GitHub Actions](.github/workflows/ci.yml) on every push and pull
+request, one job per language.
+
 ## Contributing
 
-All four SDKs implement the same surface from [`docs/API_SURFACE.md`](docs/API_SURFACE.md).
+All eight SDKs implement the same surface from [`docs/API_SURFACE.md`](docs/API_SURFACE.md).
 When the API changes, update the contract first, then mirror the change across every
 language and keep each test suite green.
 

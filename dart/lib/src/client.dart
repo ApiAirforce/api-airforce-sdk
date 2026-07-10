@@ -5,6 +5,8 @@ import 'resources/auth.dart';
 import 'resources/catalog.dart';
 import 'resources/inference.dart';
 import 'resources/media.dart';
+import 'resources/notifications.dart';
+import 'resources/org.dart';
 import 'transport.dart';
 
 /// The api.airforce API client.
@@ -22,15 +24,19 @@ class AirforceClient {
   late final Chat chat;
   late final Messages messages;
   late final Responses responses;
+  late final Embeddings embeddings;
   late final Gemini gemini;
   late final Models models;
   late final Images images;
   late final Audio audio;
   late final Video video;
+  late final ThreeD threeD;
   late final Voices voices;
   late final Account account;
   late final Keys keys;
   late final Billing billing;
+  late final Org org;
+  late final Notifications notifications;
   late final TwoFactor twofa;
   late final Auth auth;
   late final OAuth oauth;
@@ -39,15 +45,19 @@ class AirforceClient {
     chat = Chat(_t);
     messages = Messages(_t);
     responses = Responses(_t);
+    embeddings = Embeddings(_t);
     gemini = Gemini(_t);
     models = Models(_t);
     images = Images(_t);
     audio = Audio(_t);
     video = Video(_t);
+    threeD = ThreeD(_t);
     voices = Voices(_t);
     account = Account(_t);
     keys = Keys(_t);
     billing = Billing(_t);
+    org = Org(_t);
+    notifications = Notifications(_t);
     twofa = TwoFactor(_t);
     auth = Auth(_t);
     oauth = OAuth(_t);

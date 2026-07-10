@@ -169,6 +169,63 @@ func (s *AccountService) SetChannelPins(ctx context.Context, pins map[string]str
 	return out, err
 }
 
+// SetRoutingCategoryPrefs pins models to routing categories
+// ({model: category_id}).
+func (s *AccountService) SetRoutingCategoryPrefs(ctx context.Context, prefs map[string]string) (map[string]any, error) {
+	var out map[string]any
+	err := s.client.postJSONMethod(ctx, http.MethodPut, "/api/user/routing-category-prefs", "api_key", prefs, &out)
+	return out, err
+}
+
+// SetChannelOrderPrefs sets per-model channel ordering, e.g.
+// {"model": {"order": ["a", "b"], "auto_fallback": true}}.
+func (s *AccountService) SetChannelOrderPrefs(ctx context.Context, prefs map[string]any) (map[string]any, error) {
+	var out map[string]any
+	err := s.client.postJSONMethod(ctx, http.MethodPut, "/api/user/channel-order-prefs", "api_key", prefs, &out)
+	return out, err
+}
+
+// GetCustomCategories returns the caller's custom routing categories.
+func (s *AccountService) GetCustomCategories(ctx context.Context) ([]map[string]any, error) {
+	var out []map[string]any
+	err := s.client.getJSON(ctx, "/api/user/custom-categories", "api_key", nil, &out)
+	return out, err
+}
+
+// SetCustomCategories replaces the caller's custom routing categories (max 20).
+func (s *AccountService) SetCustomCategories(ctx context.Context, categories []map[string]any) (map[string]any, error) {
+	var out map[string]any
+	err := s.client.postJSONMethod(ctx, http.MethodPut, "/api/user/custom-categories", "api_key", categories, &out)
+	return out, err
+}
+
+// RoutingCategories lists the routing categories available for a model.
+func (s *AccountService) RoutingCategories(ctx context.Context, model string) (map[string]any, error) {
+	var out map[string]any
+	err := s.client.getJSON(ctx, "/api/user/routing-categories", "api_key", url.Values{"model": {model}}, &out)
+	return out, err
+}
+
+// CreateCustomModel registers a custom provider model (bring-your-own
+// endpoint); the endpoint URL is SSRF-validated server-side.
+func (s *AccountService) CreateCustomModel(ctx context.Context, params map[string]any) (map[string]any, error) {
+	var out map[string]any
+	err := s.client.postJSON(ctx, "/api/models", "session", params, &out)
+	return out, err
+}
+
+// UpdateCustomModel updates a custom provider model by its public name.
+func (s *AccountService) UpdateCustomModel(ctx context.Context, name string, params map[string]any) (map[string]any, error) {
+	var out map[string]any
+	err := s.client.postJSONMethod(ctx, http.MethodPut, "/api/models/"+url.PathEscape(name), "session", params, &out)
+	return out, err
+}
+
+// DeleteCustomModel removes a custom provider model.
+func (s *AccountService) DeleteCustomModel(ctx context.Context, name string) error {
+	return s.client.deleteJSON(ctx, "/api/models/"+url.PathEscape(name), "session", nil)
+}
+
 // Sessions lists active sessions.
 func (s *AccountService) Sessions(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
@@ -224,6 +281,38 @@ func (s *AccountService) SetBackupPoolEnabled(ctx context.Context, enabled bool)
 func (s *AccountService) TogglePayAsYouGo(ctx context.Context) (map[string]any, error) {
 	var out map[string]any
 	err := s.client.postJSON(ctx, "/api/pay-as-you-go/toggle", "session", nil, &out)
+	return out, err
+}
+
+// --- account closure -----------------------------------------------------------
+
+// CloseAccount soft-closes the account, re-authenticating in the body: every
+// session and OAuth token is revoked, the primary key rotated, secondary keys
+// disabled and subscriptions cancelled. totpCode is required when 2FA is
+// enrolled (400 totp_required otherwise). The remaining balance is forfeited
+// only when forfeitBalanceAck is true. Idempotent — a repeat call returns
+// {closed: true} again.
+func (s *AccountService) CloseAccount(ctx context.Context, password, totpCode string, forfeitBalanceAck bool) (map[string]any, error) {
+	body := map[string]any{"password": password}
+	if totpCode != "" {
+		body["totp_code"] = totpCode
+	}
+	if forfeitBalanceAck {
+		body["forfeit_balance_ack"] = true
+	}
+	var out map[string]any
+	err := s.client.postJSONMethod(ctx, http.MethodDelete, "/api/me/account", "session", body, &out)
+	return out, err
+}
+
+// Reactivate reopens a soft-closed account within the 14-day grace window,
+// identified by its former email + password. No credential is needed (a closed
+// account has no session) and none is minted — log in normally afterwards.
+// Returns {reactivated, email_restored, username_restored}; 409
+// username_unavailable when the name was re-registered in the meantime.
+func (s *AccountService) Reactivate(ctx context.Context, email, password string) (map[string]any, error) {
+	var out map[string]any
+	err := s.client.postJSON(ctx, "/auth/reactivate", "none", map[string]any{"email": email, "password": password}, &out)
 	return out, err
 }
 

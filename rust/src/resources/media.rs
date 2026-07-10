@@ -237,6 +237,116 @@ impl Video<'_> {
     }
 }
 
+/// Async 3D model generation — `/v1/3d/*`.
+///
+/// Mirrors the video task model: submit → poll → download. Tasks are
+/// owner-checked (a foreign or missing task is an indistinguishable 404) and
+/// expire, together with their stored artifact, after 24 h.
+pub struct ThreeD<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl ThreeD<'_> {
+    /// Create a 3D generation task — `POST /v1/3d/generations` with
+    /// `{model, image_urls?, resolution?, prompt?, ...extra}`. Image-to-3D
+    /// models require at least one `image_urls` entry (http(s) URL or `data:`
+    /// URI, max 4). Credits are deducted only when a worker claims the task;
+    /// failures are refunded. Returns the task in status `queued`.
+    pub async fn generate(&self, request: impl Serialize) -> Result<Value> {
+        let body = serde_json::to_value(request)?;
+        self.client
+            .request_json(Method::POST, "/v1/3d/generations", "api_key", Some(body))
+            .await
+    }
+
+    pub async fn get_task(&self, id: &str) -> Result<Value> {
+        self.client
+            .get_json(&format!("/v1/3d/tasks/{}", enc(id)), "api_key", None)
+            .await
+    }
+
+    pub async fn list_tasks(&self) -> Result<Value> {
+        let res = self
+            .client
+            .get_json("/v1/3d/tasks", "api_key", None)
+            .await?;
+        Ok(res.get("data").cloned().unwrap_or(res))
+    }
+
+    /// Download the finished model artifact (`glb`/`ply` bytes) —
+    /// `GET /v1/3d/tasks/{id}/content`. 404 until the task reports
+    /// `has_result: true`.
+    pub async fn content(&self, id: &str) -> Result<Vec<u8>> {
+        self.client
+            .request_bytes(
+                Method::GET,
+                &format!("/v1/3d/tasks/{}/content", enc(id)),
+                "api_key",
+                None,
+            )
+            .await
+    }
+
+    /// Remove a task and its artifact from history (idempotent).
+    pub async fn delete_task(&self, id: &str) -> Result<Value> {
+        self.client
+            .request_json(
+                Method::DELETE,
+                &format!("/v1/3d/tasks/{}", enc(id)),
+                "api_key",
+                None,
+            )
+            .await
+    }
+
+    /// Poll a task until it reaches a terminal state.
+    pub async fn wait_for_completion(
+        &self,
+        id: &str,
+        poll: Duration,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let task = self.get_task(id).await?;
+            match task.get("status").and_then(Value::as_str).unwrap_or("") {
+                "completed" => return Ok(task),
+                s @ ("failed" | "expired") => {
+                    return Err(Error::custom(
+                        s,
+                        format!("3D task {id} ended with status {s}"),
+                    ))
+                }
+                _ => {}
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(Error::custom(
+                    "wait_timeout",
+                    format!("timed out waiting for 3D task {id}"),
+                ));
+            }
+            tokio::time::sleep(poll).await;
+        }
+    }
+
+    pub async fn generate_and_wait(
+        &self,
+        request: impl Serialize,
+        poll: Duration,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let task = self.generate(request).await?;
+        let id = task
+            .get("task_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Error::custom("invalid_response", "3D task response had no task_id".into())
+            })?
+            .to_string();
+        self.wait_for_completion(&id, poll, timeout).await
+    }
+}
+
 /// Voice cloning — `/v1/voices/*`.
 pub struct Voices<'a> {
     pub(crate) client: &'a Client,

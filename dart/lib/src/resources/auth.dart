@@ -68,6 +68,13 @@ class Auth {
     _t.setSessionToken(null);
     return result;
   }
+
+  /// Reactivate a soft-closed account within the 14-day grace window, using
+  /// the account's former email + password → `{reactivated: true,
+  /// email_restored, username_restored}`. No session is minted — log in
+  /// normally afterwards. Rate-limited like login (429 with `retry_after`).
+  Future<dynamic> reactivate(String email, String password) =>
+      _t.post('/auth/reactivate', 'none', {'email': email, 'password': password});
 }
 
 /// OAuth 2.0 provider flow + self-service app management.

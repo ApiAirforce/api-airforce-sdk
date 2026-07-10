@@ -6,7 +6,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Account self-service — {@code /api/me}, {@code /api/user/*}. */
+/** Account self-service — {@code /api/me}, {@code /api/user/*}, custom provider models, closure. */
 public final class AccountResource extends Resource {
 
   AccountResource(Transport transport) {
@@ -118,6 +118,47 @@ public final class AccountResource extends Resource {
     return transport.method("PUT", "/api/user/channel-prefs", "api_key", pins);
   }
 
+  /** Pin models to a routing category — {@code {model: category_id}}. */
+  public JsonNode setRoutingCategoryPrefs(Map<String, Object> prefs) {
+    return transport.method("PUT", "/api/user/routing-category-prefs", "api_key", prefs);
+  }
+
+  /** Per-model channel order — {@code {model: {order: [...], auto_fallback?}}}. */
+  public JsonNode setChannelOrderPrefs(Map<String, Object> prefs) {
+    return transport.method("PUT", "/api/user/channel-order-prefs", "api_key", prefs);
+  }
+
+  /** List the caller's custom routing categories. */
+  public JsonNode getCustomCategories() {
+    return transport.get("/api/user/custom-categories", "api_key", null);
+  }
+
+  /** Replace the caller's custom routing categories (max 20). */
+  public JsonNode setCustomCategories(List<Map<String, Object>> categories) {
+    return transport.method("PUT", "/api/user/custom-categories", "api_key", categories);
+  }
+
+  /** Routing categories applicable to a model — {@code {categories: [...]}}. */
+  public JsonNode routingCategories(String model) {
+    return transport.get("/api/user/routing-categories", "api_key",
+        Collections.singletonMap("model", model));
+  }
+
+  /** Register a custom provider model ({@code fake_name}, {@code endpoint}, ...). */
+  public JsonNode createCustomModel(Map<String, Object> params) {
+    return transport.post("/api/models", "session", params);
+  }
+
+  /** Update a custom provider model. */
+  public JsonNode updateCustomModel(String fakeName, Map<String, Object> params) {
+    return transport.method("PUT", "/api/models/" + enc(fakeName), "session", params);
+  }
+
+  /** Delete a custom provider model. */
+  public JsonNode deleteCustomModel(String fakeName) {
+    return transport.delete("/api/models/" + enc(fakeName), "session");
+  }
+
   public JsonNode sessions() {
     return transport.get("/api/me/sessions", "session", null);
   }
@@ -151,5 +192,28 @@ public final class AccountResource extends Resource {
 
   public JsonNode togglePayAsYouGo() {
     return transport.post("/api/pay-as-you-go/toggle", "session", null);
+  }
+
+  /**
+   * Soft-close the account — {@code DELETE /api/me/account}. Re-authenticates in the body:
+   * {@code password} (required), {@code totp_code} (required when 2FA is enrolled, else 400
+   * {@code totp_required}), {@code forfeit_balance_ack} (the remaining balance is zeroed
+   * only when true). Revokes every session and OAuth token, rotates the primary API key,
+   * disables secondary keys, and cancels subscriptions. Idempotent.
+   */
+  public JsonNode closeAccount(Map<String, Object> params) {
+    return transport.method("DELETE", "/api/me/account", "session", params);
+  }
+
+  /**
+   * Reactivate a soft-closed account within the 14-day grace window, identified by its
+   * former email + password. Public (a closed account has no session) and rate-limited like
+   * login. No session is minted — log in normally afterwards.
+   */
+  public JsonNode reactivate(String email, String password) {
+    Map<String, Object> body = new HashMap<>();
+    body.put("email", email);
+    body.put("password", password);
+    return transport.post("/auth/reactivate", "none", body);
   }
 }
