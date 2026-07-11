@@ -68,8 +68,14 @@ class Account(SyncAPIResource):
     def get_smart_routing(self, **kw: Any) -> Any:
         return self._transport.request("GET", "/api/user/smart-routing", auth=_APIKEY, **kw)
 
-    def set_smart_routing(self, groups: Dict[str, Any], **kw: Any) -> Any:
-        return self._transport.request("PUT", "/api/user/smart-routing", auth=_APIKEY, json={"groups": groups}, **kw)
+    def set_smart_routing(self, groups: Optional[Dict[str, Any]] = None, method_prefs: Optional[Dict[str, str]] = None, **kw: Any) -> Any:
+        """Partial update: omitted fields keep their stored value; pass {} to clear."""
+        body: Dict[str, Any] = {}
+        if groups is not None:
+            body["groups"] = groups
+        if method_prefs is not None:
+            body["method_prefs"] = method_prefs
+        return self._transport.request("PUT", "/api/user/smart-routing", auth=_APIKEY, json=body, **kw)
 
     def test_smart_routing(self, model: str, **kw: Any) -> Any:
         return self._transport.request("GET", "/api/user/smart-routing/test", auth=_APIKEY, params={"model": model}, **kw)
@@ -209,8 +215,14 @@ class AsyncAccount(AsyncAPIResource):
     async def get_smart_routing(self, **kw: Any) -> Any:
         return await self._transport.request("GET", "/api/user/smart-routing", auth=_APIKEY, **kw)
 
-    async def set_smart_routing(self, groups: Dict[str, Any], **kw: Any) -> Any:
-        return await self._transport.request("PUT", "/api/user/smart-routing", auth=_APIKEY, json={"groups": groups}, **kw)
+    async def set_smart_routing(self, groups: Optional[Dict[str, Any]] = None, method_prefs: Optional[Dict[str, str]] = None, **kw: Any) -> Any:
+        """Partial update: omitted fields keep their stored value; pass {} to clear."""
+        body: Dict[str, Any] = {}
+        if groups is not None:
+            body["groups"] = groups
+        if method_prefs is not None:
+            body["method_prefs"] = method_prefs
+        return await self._transport.request("PUT", "/api/user/smart-routing", auth=_APIKEY, json=body, **kw)
 
     async def test_smart_routing(self, model: str, **kw: Any) -> Any:
         return await self._transport.request("GET", "/api/user/smart-routing/test", auth=_APIKEY, params={"model": model}, **kw)

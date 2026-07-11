@@ -62,8 +62,14 @@ public sealed class AccountResource : Resource
     public Task<JsonNode?> GetSmartRoutingAsync(CancellationToken ct = default)
         => Transport.GetAsync("/api/user/smart-routing", "api_key", null, ct);
 
-    public Task<JsonNode?> SetSmartRoutingAsync(object groups, CancellationToken ct = default)
-        => Transport.MethodAsync(HttpMethod.Put, "/api/user/smart-routing", "api_key", new { groups }, ct);
+    /// <summary>Partial update: null keeps the stored value; an empty dictionary clears.</summary>
+    public Task<JsonNode?> SetSmartRoutingAsync(object? groups = null, IDictionary<string, string>? methodPrefs = null, CancellationToken ct = default)
+    {
+        var body = new Dictionary<string, object>();
+        if (groups is not null) body["groups"] = groups;
+        if (methodPrefs is not null) body["method_prefs"] = methodPrefs;
+        return Transport.MethodAsync(HttpMethod.Put, "/api/user/smart-routing", "api_key", body, ct);
+    }
 
     public Task<JsonNode?> TestSmartRoutingAsync(string model, CancellationToken ct = default)
         => Transport.GetAsync("/api/user/smart-routing/test", "api_key",

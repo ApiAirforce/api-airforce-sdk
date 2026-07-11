@@ -29,7 +29,7 @@ Two credential types exist; the SDK carries one or both and sends them as header
 
 | Credential | Format | Header | Used for |
 | --- | --- | --- | --- |
-| **API key** | `sk-air-…` (primary) or secondary keys | `Authorization: Bearer <key>` (also `x-api-key` for Anthropic-style, `x-goog-api-key`/`?key=` for Gemini) | All `/v1/*` inference + media, `/v1/keys` provisioning, and the `api_key`-marked `/api/user/*` endpoints |
+| **API key** | `sk-air-…` (primary) or secondary keys | `Authorization: Bearer <key>` (also `x-api-key` for Anthropic-style, `x-goog-api-key`/`?key=` for Gemini) | All `/v1/*` inference + media and `/v1/keys` provisioning. The `api_key`-marked `/api/user/*` preference endpoints accept the **primary** key only — secondary keys are delegated inference credentials and cannot change account preferences (a session JWT works there too) |
 | **OAuth token** | `airf_oat_…` | `Authorization: Bearer <token>` | Third-party access scoped by OAuth scopes (`chat`, `images`, `keys:read`, `keys:write`, `profile`) |
 | **Session JWT** | JWT (7-day) | `Authorization: Bearer <jwt>` or `Cookie: airforce_session=<jwt>` | `session_cookie`-marked `/api/*` account + billing endpoints |
 
@@ -327,7 +327,7 @@ Mostly `session_cookie` (session JWT). A few are `api_key` (marked).
 | DELETE | `/api/user/model-aliases/{alias}` | session | → `{success, removed}` |
 | GET/PUT | `/api/user/model-defaults` and `/{model}` | session | `UserModelDefault {temperature?, top_p?, max_tokens?, thinking?, thinking_budget?, reasoning_effort?, stop?}` |
 | DELETE | `/api/user/model-defaults/{model}` | session | → `{success, removed}` |
-| GET/PUT | `/api/user/smart-routing` | **api_key** | `{groups:{id:{priority_order:string[]}}}` (max 10 groups × 30) |
+| GET/PUT | `/api/user/smart-routing` | **api_key** | PUT is a partial update — omitted fields keep their stored value, `{}` clears: `{groups?:{id:{priority_order:string[]}}, method_prefs?:{model: method_id}}` (max 10 groups × 30; max 200 method pins, group-key models allowed). GET → `{user, admin_groups}` |
 | GET | `/api/user/smart-routing/test?model=` | api_key | → `{requested, resolved_to?}` |
 | GET/PUT | `/api/user/channel-prefs` | api_key | `{model: channel_alias}` (single-pin) |
 | PUT | `/api/user/routing-category-prefs` | api_key | `{model: category_id}` |

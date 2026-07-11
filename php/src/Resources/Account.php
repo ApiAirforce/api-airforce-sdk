@@ -105,10 +105,21 @@ final class Account
     {
         return $this->t->get('/api/user/smart-routing', 'api_key');
     }
-    /** @param array<string,mixed> $groups */
-    public function setSmartRouting(array $groups): mixed
+    /**
+     * Partial update: null keeps the stored value; [] clears.
+     * @param array<string,mixed>|null $groups
+     * @param array<string,string>|null $methodPrefs
+     */
+    public function setSmartRouting(?array $groups = null, ?array $methodPrefs = null): mixed
     {
-        return $this->t->method('PUT', '/api/user/smart-routing', 'api_key', ['groups' => $groups]);
+        $body = [];
+        if ($groups !== null) {
+            $body['groups'] = $groups === [] ? new \stdClass() : $groups;
+        }
+        if ($methodPrefs !== null) {
+            $body['method_prefs'] = $methodPrefs === [] ? new \stdClass() : $methodPrefs;
+        }
+        return $this->t->method('PUT', '/api/user/smart-routing', 'api_key', $body === [] ? new \stdClass() : $body);
     }
     public function testSmartRouting(string $model): mixed
     {

@@ -147,8 +147,20 @@ impl Account<'_> {
             .get_json("/api/user/smart-routing", "api_key", None)
             .await
     }
-    pub async fn set_smart_routing(&self, groups: impl Serialize) -> Result<Value> {
-        let body = json!({ "groups": serde_json::to_value(groups)? });
+    /// Partial update: `None` keeps the stored value; an empty map clears.
+    pub async fn set_smart_routing(
+        &self,
+        groups: Option<impl Serialize>,
+        method_prefs: Option<std::collections::HashMap<String, String>>,
+    ) -> Result<Value> {
+        let mut map = serde_json::Map::new();
+        if let Some(g) = groups {
+            map.insert("groups".into(), serde_json::to_value(g)?);
+        }
+        if let Some(p) = method_prefs {
+            map.insert("method_prefs".into(), serde_json::to_value(p)?);
+        }
+        let body = Value::Object(map);
         self.client
             .request_json(
                 Method::PUT,

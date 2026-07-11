@@ -78,8 +78,14 @@ export interface UserModelDefault {
   stop?: string[];
 }
 
+/**
+ * Smart-routing preferences. On PUT this is a partial update: an omitted
+ * field keeps its stored value, `{}` explicitly clears it.
+ */
 export interface SmartRoutingConfig {
-  groups: Record<string, { priority_order: string[] }>;
+  groups?: Record<string, { priority_order: string[] }>;
+  /** Per-model method pin — `{ model: method_id }`, ids as shown in the dashboard. */
+  method_prefs?: Record<string, string>;
 }
 
 /** A per-model custom channel order (the user's own ordered fallback chain). */

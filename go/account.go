@@ -141,10 +141,17 @@ func (s *AccountService) GetSmartRouting(ctx context.Context) (map[string]any, e
 	return out, err
 }
 
-// SetSmartRouting sets the user's smart-routing groups.
-func (s *AccountService) SetSmartRouting(ctx context.Context, groups map[string]any) (map[string]any, error) {
+// SmartRoutingUpdate is a partial smart-routing update: a nil field keeps
+// the stored value, a pointer to an empty map explicitly clears it.
+type SmartRoutingUpdate struct {
+	Groups      *map[string]any    `json:"groups,omitempty"`
+	MethodPrefs *map[string]string `json:"method_prefs,omitempty"`
+}
+
+// SetSmartRouting partially updates the user's smart-routing preferences.
+func (s *AccountService) SetSmartRouting(ctx context.Context, update SmartRoutingUpdate) (map[string]any, error) {
 	var out map[string]any
-	err := s.client.postJSONMethod(ctx, http.MethodPut, "/api/user/smart-routing", "api_key", map[string]any{"groups": groups}, &out)
+	err := s.client.postJSONMethod(ctx, http.MethodPut, "/api/user/smart-routing", "api_key", update, &out)
 	return out, err
 }
 

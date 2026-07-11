@@ -102,8 +102,19 @@ public final class AccountResource extends Resource {
   }
 
   public JsonNode setSmartRouting(Map<String, Object> groups) {
-    return transport.method("PUT", "/api/user/smart-routing", "api_key",
-        Collections.singletonMap("groups", groups));
+    return setSmartRouting(groups, null);
+  }
+
+  /** Partial update: a null argument keeps the stored value; an empty map clears. */
+  public JsonNode setSmartRouting(Map<String, Object> groups, Map<String, String> methodPrefs) {
+    Map<String, Object> body = new HashMap<>();
+    if (groups != null) {
+      body.put("groups", groups);
+    }
+    if (methodPrefs != null) {
+      body.put("method_prefs", methodPrefs);
+    }
+    return transport.method("PUT", "/api/user/smart-routing", "api_key", body);
   }
 
   public JsonNode testSmartRouting(String model) {

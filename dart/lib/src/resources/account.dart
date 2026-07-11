@@ -43,8 +43,13 @@ class Account {
       _t.delete('/api/user/model-defaults/${_enc(model)}', 'session');
 
   Future<dynamic> getSmartRouting() => _t.get('/api/user/smart-routing', 'api_key');
-  Future<dynamic> setSmartRouting(Map<String, dynamic> groups) =>
-      _t.method('PUT', '/api/user/smart-routing', 'api_key', {'groups': groups});
+  /// Partial update: omitted fields keep their stored value; pass {} to clear.
+  Future<dynamic> setSmartRouting(
+          {Map<String, dynamic>? groups, Map<String, String>? methodPrefs}) =>
+      _t.method('PUT', '/api/user/smart-routing', 'api_key', {
+        if (groups != null) 'groups': groups,
+        if (methodPrefs != null) 'method_prefs': methodPrefs,
+      });
   Future<dynamic> testSmartRouting(String model) =>
       _t.get('/api/user/smart-routing/test', 'api_key', query: {'model': model});
 
