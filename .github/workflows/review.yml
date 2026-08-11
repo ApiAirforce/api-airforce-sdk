@@ -1,0 +1,208 @@
+# Automated pull-request review - self-built, running entirely in our own
+# Actions against our own model relay. No third-party service, no per-run fee.
+#
+# WHY THIS EXISTS INSTEAD OF A HOSTED REVIEW BOT: the hosted options charge for
+# private repositories (Pullfrog: $30/month org plan; 30 free runs, then
+# $0.07/run), and their control plane is not self-hostable. This file does the
+# core of the job - read the diff, judge it, post a review - with nothing
+# leaving infrastructure we control.
+#
+# CREDENTIALS: reuses the values already present in every repository:
+#   secret PULLFROG_BASE_URL    OpenAI-compatible endpoint (our relay)
+#   secret PULLFROG_API_KEY     its key
+#   var    PULLFROG_MODEL       model id
+# The PULLFROG_ prefix is historical - they were set for the Pullfrog trial and
+# this reviewer took them over rather than duplicating a live key under a
+# second name.
+#
+# SECURITY NOTES, both deliberate:
+#   * Nothing from the PR (title, body, branch names) is interpolated into the
+#     script below - everything arrives via env. A PR title containing shell or
+#     ${{ }} syntax must stay data, not become code.
+#   * On fork pull requests GitHub withholds secrets; the job then skips with a
+#     notice instead of failing. It must never use pull_request_target to get
+#     the secrets back - that combination (foreign code + real key) is the
+#     classic self-inflicted leak.
+
+name: review
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr:
+        type: string
+        description: PR number to review
+
+concurrency:
+  group: review-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Review the diff
+        env:
+          BASE: ${{ secrets.PULLFROG_BASE_URL }}
+          KEY: ${{ secrets.PULLFROG_API_KEY }}
+          MODEL: ${{ vars.PULLFROG_MODEL }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re, subprocess, sys, urllib.request
+
+          BASE = (os.environ.get("BASE") or "").rstrip("/")
+          KEY = os.environ.get("KEY") or ""
+          MODEL = os.environ.get("MODEL") or "gpt-5.5"
+          REPO = os.environ["REPO"]
+          PR = os.environ.get("PR_NUM") or ""
+          MAX_DIFF = 160_000  # chars; ~40k tokens - beyond that the tail is cut, and the review says so
+
+          if not KEY or not BASE:
+              # Fork PRs get no secrets. That is correct and not an error - but it
+              # must be said out loud, not passed off as a completed review.
+              print("No model credentials in this context (fork PR?) - review skipped.")
+              sys.exit(0)
+          if not PR:
+              print("No PR number - nothing to review.", file=sys.stderr)
+              sys.exit(2)
+
+          def gh(*args, raw=False):
+              r = subprocess.run(["gh", "api", *args], capture_output=True, text=True)
+              if r.returncode != 0:
+                  print(r.stderr[:400], file=sys.stderr)
+                  sys.exit(2)
+              return r.stdout if raw else json.loads(r.stdout)
+
+          pr = gh(f"repos/{REPO}/pulls/{PR}")
+          head = os.environ.get("HEAD_SHA") or pr["head"]["sha"]
+          marker = f"<!-- airforce-review {head} -->"
+
+          # Idempotence: one review per head commit, re-runs must not spam.
+          for rv in gh(f"repos/{REPO}/pulls/{PR}/reviews", "--paginate"):
+              if marker in (rv.get("body") or ""):
+                  print(f"Review for {head[:7]} already posted - nothing to do.")
+                  sys.exit(0)
+
+          diff = gh(f"repos/{REPO}/pulls/{PR}", "-H", "Accept: application/vnd.github.v3.diff", raw=True)
+          truncated = len(diff) > MAX_DIFF
+          if truncated:
+              diff = diff[:MAX_DIFF]
+          if not diff.strip():
+              print("Empty diff - nothing to review.")
+              sys.exit(0)
+
+          # Public repository -> English (community-facing); internal -> German.
+          english = REPO.endswith("api-airforce-sdk")
+          lang = "English" if english else "German"
+
+          system = (
+              "You are a strict senior code reviewer for the api.airforce platform "
+              "(AI model gateway; Rust backend, Next.js frontend, money-handling code). "
+              "Review the diff for REAL defects only: logic errors, billing/money-path "
+              "mistakes, security problems, silently swallowed errors, race conditions, "
+              "missing i18n keys (all 19 locales must stay in sync). Do NOT comment on "
+              "formatting or style - separate CI jobs own that. If the change is sound, "
+              "say so briefly. Never invent line numbers: only reference lines that "
+              f"appear in the diff. Write all prose in {lang}. "
+              'Answer with STRICT JSON only, no code fences: {"verdict":"lgtm"|"findings",'
+              '"summary":"...","findings":[{"path":"...","line":123,'
+              '"severity":"high"|"medium"|"low","note":"..."}]} '
+              '- "line" must be a line number in the NEW version of the file, taken from '
+              "the diff hunk headers. Omit findings you are not confident about."
+          )
+          user = (f"PR #{PR} – {pr.get('title','')!s}\n\n"
+                  + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
+                  + diff)
+
+          def call(payload):
+              req = urllib.request.Request(
+                  BASE + "/chat/completions",
+                  data=json.dumps(payload).encode(),
+                  headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
+                  method="POST")
+              with urllib.request.urlopen(req, timeout=600) as resp:
+                  return json.load(resp)
+
+          payload = {"model": MODEL,
+                     "messages": [{"role": "system", "content": system},
+                                  {"role": "user", "content": user}],
+                     "max_completion_tokens": 8000,
+                     "reasoning_effort": "high"}
+          try:
+              out = call(payload)
+          except urllib.error.HTTPError as e:
+              if e.code == 400:
+                  payload.pop("reasoning_effort", None)  # relay may not know the field
+                  out = call(payload)
+              else:
+                  # A reviewer that could not run must fail loudly, not pass as clean.
+                  print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
+                  sys.exit(1)
+
+          text = out["choices"][0]["message"]["content"] or ""
+          usage = out.get("usage", {})
+          print(f"model={out.get('model')} tokens: {usage}")
+
+          m = re.search(r"\{.*\}", text, re.S)
+          try:
+              verdict = json.loads(m.group(0)) if m else {}
+          except ValueError:
+              verdict = {}
+          summary = verdict.get("summary") or text.strip()[:2000]
+          findings = [f for f in (verdict.get("findings") or [])
+                      if isinstance(f, dict) and f.get("path")]
+
+          sev_de = {"high": "hoch", "medium": "mittel", "low": "niedrig"}
+          title = "## Automated review" if english else "## Automatische Durchsicht"
+          lines = [title, "", summary, ""]
+          if findings:
+              lines += ["| # | Datei | Zeile | Schwere | Befund |" if not english
+                        else "| # | File | Line | Severity | Finding |",
+                        "|---|---|---|---|---|"]
+              for i, f in enumerate(findings, 1):
+                  sev = f.get("severity", "medium")
+                  lines.append(f"| {i} | `{f['path']}` | {f.get('line','?')} | "
+                               f"{sev if english else sev_de.get(sev, sev)} | {f.get('note','')} |")
+              lines.append("")
+          if truncated:
+              lines.append("_Diff bei 160k Zeichen gekappt; nur der sichtbare Teil wurde beurteilt._"
+                           if not english else "_Diff truncated at 160k chars; only the visible part was judged._")
+          lines += ["", f"_{MODEL} · api.airforce_", marker]
+          body = "\n".join(lines)
+
+          comments = [{"path": f["path"], "line": int(f["line"]), "side": "RIGHT",
+                       "body": f"**{f.get('severity','medium')}**: {f.get('note','')}"}
+                      for f in findings
+                      if str(f.get("line", "")).isdigit()][:20]
+
+          def post(payload):
+              r = subprocess.run(
+                  ["gh", "api", "-X", "POST", f"repos/{REPO}/pulls/{PR}/reviews",
+                   "--input", "-"],
+                  input=json.dumps(payload), capture_output=True, text=True)
+              return r.returncode == 0, r.stderr
+
+          ok, err = post({"commit_id": head, "event": "COMMENT", "body": body,
+                          "comments": comments})
+          if not ok and comments:
+              # A single stale line number 422s the whole review - the body-only
+              # fallback keeps the findings visible instead of losing them.
+              print(f"inline comments rejected ({err[:200]}), posting body only")
+              ok, err = post({"commit_id": head, "event": "COMMENT", "body": body})
+          if not ok:
+              print(f"posting review failed: {err[:400]}", file=sys.stderr)
+              sys.exit(1)
+          print(f"review posted: {len(findings)} finding(s), verdict={verdict.get('verdict','?')}")
+          PYEOF
