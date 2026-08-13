@@ -60,7 +60,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python3 - <<'PYEOF'
-          import json, os, re, subprocess, sys, urllib.request
+          import json, os, re, subprocess, sys, time, urllib.error, urllib.request
 
           BASE = (os.environ.get("BASE") or "").rstrip("/")
           KEY = os.environ.get("KEY") or ""
@@ -140,15 +140,40 @@ jobs:
                                   {"role": "user", "content": user}],
                      "max_completion_tokens": 8000,
                      "reasoning_effort": "high"}
-          try:
-              out = call(payload)
-          except urllib.error.HTTPError as e:
-              if e.code == 400:
-                  payload.pop("reasoning_effort", None)  # relay may not know the field
+          # WIEDERHOLUNG BEI FLUECHTIGEN FEHLERN. Gemessen am 13.08.: eine
+          # durchsicht scheiterte an HTTP 502 "Upstream service temporarily
+          # unavailable" - aus UNSEREM eigenen relay. Ohne wiederholung erbt die
+          # durchsicht jeden schluckauf der plattform, die sie pruefen soll, und
+          # ein roter check ohne befund erzieht dazu, rote checks zu ignorieren.
+          # Bleibt es dauerhaft rot, faellt der lauf weiterhin LAUT durch.
+          FLUECHTIG = {429, 500, 502, 503, 504}
+          PAUSEN = [5, 20, 60]
+          out = None
+          while out is None:
+              try:
                   out = call(payload)
-              else:
+              except urllib.error.HTTPError as e:
+                  # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
+                  # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
+                  # der drei versuche zu verbrauchen.
+                  if e.code == 400 and payload.pop("reasoning_effort", None) is not None:
+                      continue
+                  if e.code in FLUECHTIG and PAUSEN:
+                      p = PAUSEN.pop(0)
+                      print(f"relay antwortete HTTP {e.code} - neuer versuch in {p}s",
+                            file=sys.stderr)
+                      time.sleep(p)
+                      continue
                   # A reviewer that could not run must fail loudly, not pass as clean.
                   print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
+                  sys.exit(1)
+              except urllib.error.URLError as e:
+                  if PAUSEN:
+                      p = PAUSEN.pop(0)
+                      print(f"netzfehler ({e.reason}) - neuer versuch in {p}s", file=sys.stderr)
+                      time.sleep(p)
+                      continue
+                  print(f"Model call failed: {e.reason}", file=sys.stderr)
                   sys.exit(1)
 
           text = out["choices"][0]["message"]["content"] or ""
