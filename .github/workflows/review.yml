@@ -64,7 +64,7 @@ jobs:
 
           BASE = (os.environ.get("BASE") or "").rstrip("/")
           KEY = os.environ.get("KEY") or ""
-          MODEL = os.environ.get("MODEL") or "gpt-5.5"
+          MODEL = os.environ.get("MODEL") or "gpt-5.6"
           REPO = os.environ["REPO"]
           PR = os.environ.get("PR_NUM") or ""
           MAX_DIFF = 160_000  # chars; ~40k tokens - beyond that the tail is cut, and the review says so
@@ -139,7 +139,7 @@ jobs:
                      "messages": [{"role": "system", "content": system},
                                   {"role": "user", "content": user}],
                      "max_completion_tokens": 8000,
-                     "reasoning_effort": "high"}
+                     "reasoning_effort": "max"}
           # WIEDERHOLUNG BEI FLUECHTIGEN FEHLERN. Gemessen am 13.08.: eine
           # durchsicht scheiterte an HTTP 502 "Upstream service temporarily
           # unavailable" - aus UNSEREM eigenen relay. Ohne wiederholung erbt die
@@ -156,8 +156,17 @@ jobs:
                   # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
                   # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
                   # der drei versuche zu verbrauchen.
-                  if e.code == 400 and payload.pop("reasoning_effort", None) is not None:
-                      continue
+                  if e.code == 400:
+                      stufe = payload.get("reasoning_effort")
+                      if stufe == "max":
+                          payload["reasoning_effort"] = "high"
+                          print("relay kennt reasoning_effort=max nicht - weiter mit high",
+                                file=sys.stderr)
+                          continue
+                      if payload.pop("reasoning_effort", None) is not None:
+                          print("relay kennt reasoning_effort nicht - weiter ohne das feld",
+                                file=sys.stderr)
+                          continue
                   if e.code in FLUECHTIG and PAUSEN:
                       p = PAUSEN.pop(0)
                       print(f"relay antwortete HTTP {e.code} - neuer versuch in {p}s",
