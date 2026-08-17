@@ -1,14 +1,13 @@
-# Hält dev auf dem Stand von main — automatisch, nach jedem Push auf main.
+# Haelt dev auf dem Stand von main — automatisch, nach jedem Push auf main.
 #
 # WARUM ES DAS GIBT (gemessen am 17.08.2026): dev hing 3 Commits HINTER main.
-# Nicht aus Nachlässigkeit, sondern mechanisch — auf main schreiben mehrere
-# Quellen, die dev nie sieht:
+# Nicht aus Nachlaessigkeit, sondern mechanisch — auf main schreiben Quellen,
+# die dev nie sieht:
 #   - Releases und CI-Korrekturen werden direkt auf main gemacht
-#
-# Entwickelt wird auf dev. Zurück gemerged hat es nie jemand, also baute jeder
+# Entwickelt wird auf dev. Zurueck gemerged hat es nie jemand, also baute jeder
 # neue Zweig auf einem dev auf, das den laufenden prod-Stand nicht kannte.
 #
-# Diese Richtung (main -> dev) ist die ungefährliche: dev deployt nur die
+# Diese Richtung (main -> dev) ist die ungefaehrliche: dev deployt nur die
 # dev-Umgebung. Die Gegenrichtung (dev -> main) ist ein Produktions-Release
 # und bleibt bewusst Handarbeit — sie wird hier NICHT automatisiert.
 #
@@ -39,7 +38,7 @@ jobs:
           fetch-depth: 0
           ref: dev
 
-      - name: Identität für den Merge-Commit
+      - name: Identitaet fuer den Merge-Commit
         run: |
           git config user.name  "airforce-sync-bot"
           git config user.email "sync-bot@api.airforce"
@@ -49,13 +48,13 @@ jobs:
         run: |
           set -o pipefail
           git fetch origin main dev
-
           AHEAD=$(git rev-list --count origin/dev..origin/main)
           echo "main ist $AHEAD Commits vor dev"
           if [ "$AHEAD" -eq 0 ]; then
-            echo "nichts zu tun" && echo "status=noop" >> "$GITHUB_OUTPUT" && exit 0
+            echo "nichts zu tun"
+            echo "status=noop" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-
           if git merge --no-edit origin/main -m "chore: sync dev with main ($AHEAD commits)"; then
             git push origin HEAD:dev
             echo "status=merged" >> "$GITHUB_OUTPUT"
@@ -64,7 +63,7 @@ jobs:
             echo "status=conflict" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bei Konflikt einen PR öffnen, statt still zu scheitern
+      - name: Bei Konflikt einen PR oeffnen, statt still zu scheitern
         if: steps.merge.outputs.status == 'conflict'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -76,12 +75,19 @@ jobs:
             echo "PR existiert bereits, kein zweiter"
             exit 0
           fi
+          # Body ueber eine Datei, nicht inline: ein mehrzeiliger --body-String
+          # sprengt den YAML-Block, und Backticks darin wuerden von der Shell
+          # als Kommando-Substitution ausgefuehrt.
+          cat > /tmp/pr-body.md <<'ENDE'
+          Der automatische Abgleich main -> dev ist an einem Konflikt gescheitert.
+
+          Solange dieser PR offen ist, baut jeder neue Zweig aus dev auf einem
+          Stand auf, der die Arbeit auf main nicht kennt — darunter die
+          taeglichen Bot-Commits und alles, was per Release direkt auf main ging.
+
+          Bitte von Hand aufloesen und mergen. Der Job laeuft danach wieder von
+          selbst.
+          ENDE
           gh pr create --base dev --head main \
             --title "dev hinkt main hinterher — Merge braucht Handarbeit" \
-            --body "Der automatische Abgleich main → dev ist an einem Konflikt gescheitert.
-
-Solange dieser PR offen ist, baut jeder neue Zweig aus \`dev\` auf einem Stand
-auf, der die Arbeit auf \`main\` nicht kennt — darunter die täglichen Bot-Commits
-und alles, was per Release direkt auf main ging.
-
-Bitte von Hand auflösen und mergen. Der Job läuft danach wieder von selbst."
+            --body-file /tmp/pr-body.md
