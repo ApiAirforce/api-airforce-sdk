@@ -206,7 +206,26 @@ jobs:
               sys.exit(1)
 
           # Ohne `test` ist `main` die Basis - der erste Durchlauf legt den Zweig an.
-          basis = test or main
+          #
+          # `test` KANN AUCH HINTER `main` LIEGEN, und dann ist es kein Kandidat,
+          # sondern ein Rest: `main` ist ohne ihn weitergezogen. Gemessen am
+          # 23.08. im Frontend - `test` stand 20 Commits HINTER `main`, weil ein
+          # Release `dev` direkt ausgeliefert hat. Moeglich war das, weil auf
+          # `main` noch die alte Fassung des Release-Ablaufs lag und
+          # `workflow_dispatch` die Datei IMMER vom Vorgabe-Zweig liest, nie vom
+          # Zweig, den man auswaehlt.
+          #
+          # Die alte Fassung hier fragte nur `test != main` und meldete daraufhin
+          # einen wartenden Kandidaten von "0 Commit(s)". Das war eine Sperre,
+          # die sich von selbst nie wieder geoeffnet haette: es gab nichts
+          # abzunehmen, und trotzdem hielt das Tor darauf zu.
+          kandidat = (test is not None and test != main
+                      and git("merge-base", "--is-ancestor", main, test,
+                              check=False) is not None)
+          veraltet = test is not None and test != main and not kandidat
+          if veraltet:
+              print("test liegt HINTER main - `main` ist die Basis, `test` wird nachgezogen.")
+          basis = test if (test is not None and not veraltet) else main
           neu = test is None
 
           if dev == basis:
@@ -227,7 +246,7 @@ jobs:
 
           # Ein Kandidat, der noch nicht ausgeliefert ist, wird NICHT ueberholt -
           # sonst pruefte man wieder einen Baum, der sich unter der Hand aendert.
-          if test and test != main and EREIGNIS != "workflow_dispatch":
+          if kandidat and EREIGNIS != "workflow_dispatch":
               offen = git("rev-list", "--count", "%s..%s" % (main, test)) or "?"
               bericht(
                   "`test` traegt einen Kandidaten, der noch nicht ausgeliefert ist.",
