@@ -276,7 +276,8 @@ jobs:
 
           # ---- Punkt 2+3: Durchsicht und offene Befunde ---------------------
           ohne, hoch = [], []
-          if (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() != "ja":
+          DURCHSICHT = (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() == "ja"
+          if not DURCHSICHT:
               print("Durchsicht wird in diesem Repo nicht verlangt (kein review-push.yml).")
               roh = ""
           else:
@@ -353,9 +354,13 @@ jobs:
               sys.exit(1)
 
           anzahl = git("rev-list", "--count", "%s..%s" % (basis, dev)) or "?"
-          text = ("`test` %s auf `%s` (%s Commit(s) aus `dev`). Alle Pflicht-Pruefungen "
-                  "gruen, jede Durchsicht da, kein offener Befund `hoch`."
-                  % ("angelegt" if neu else "vorgespult", dev[:8], anzahl))
+          # Der Satz darf nur aufzaehlen, was WIRKLICH geprueft wurde. Steht die
+          # Durchsicht ab, ist "jede Durchsicht da" eine Behauptung ueber einen
+          # Schritt, den es in diesem Lauf gar nicht gab.
+          text = ("`test` %s auf `%s` (%s Commit(s) aus `dev`). Alle Pflicht-Pruefungen gruen%s."
+                  % ("angelegt" if neu else "vorgespult", dev[:8], anzahl,
+                     ", jede Durchsicht da, kein offener Befund `hoch`" if DURCHSICHT
+                     else "; die Durchsicht wird in diesem Repo NICHT geprueft"))
           print(text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
               f.write("## test vorgespult\n\n%s\n" % text)
