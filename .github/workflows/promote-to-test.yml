@@ -55,6 +55,16 @@ on:
   workflow_run:
     workflows: ['CI']
     types: [completed]
+    # OHNE DIESEN FILTER SCHIESST SICH DAS TOR SELBST AB. Die CI laeuft auch auf
+    # `test` und `main`; jeder dieser Laeufe loeste hier ein `workflow_run` aus.
+    # Der Job stieg zwar sofort wieder aus ("kam nicht von dev") - aber die
+    # Abbruch-Regel unten greift VOR der Job-Logik, und so hat ein bedeutungsloser
+    # Lauf auf `main` den einzigen Lauf abgebrochen, der wirklich etwas zu pruefen
+    # hatte. Gemessen am 23.08.2026 im Frontend: `dev` stand mit allem gruen und
+    # fertiger Durchsicht 1 Commit vor `test`, und der zugehoerige Tor-Lauf war
+    # `cancelled` - abgeschossen von zwei `workflow_run`-Laeufen auf dem ALTEN
+    # Stand `d163669d`. Der Zweigfilter haelt sie jetzt schon vom Starten ab.
+    branches: [dev]
   workflow_dispatch:
 
 permissions:
