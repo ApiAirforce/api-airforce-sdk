@@ -70,11 +70,23 @@ jobs:
         run: |
           # Ein bestehender offener PR reicht — sonst entsteht bei jedem
           # main-Push ein weiterer und niemand sieht mehr, was offen ist.
-          VORHANDEN=$(gh pr list --base dev --head main --state open --json number --jq 'length')
+          # NIEMALS `main` selbst als Head. GitHubs "Resolve conflicts" und
+          # "Update branch" schreiben die Aufloesung auf den HEAD-Zweig und
+          # mergen dafuer die Base (`dev`) hinein. Mit `head=main` hiesse das:
+          # unfreigegebener `dev`-Stand landet auf `main` - genau der Weg, den
+          # die Kette dev -> test -> main ausschliesst. Und weil `main` per
+          # Ruleset geschuetzt ist, scheitert die Aufloesung stattdessen: der
+          # PR ist ueber die Oberflaeche gar nicht zu bearbeiten. Beides als
+          # Befund `hoch` gemeldet, 23.08.2026, in vier Repos gleichzeitig.
+          SYNC_ZWEIG=sync/main-to-dev
+          VORHANDEN=$(gh pr list --base dev --head "$SYNC_ZWEIG" --state open --json number --jq 'length')
           if [ "$VORHANDEN" -gt 0 ]; then
             echo "PR existiert bereits, kein zweiter"
             exit 0
           fi
+          # Erst hier setzen: laege schon ein PR offen, wuerde ein Neusetzen
+          # den Zweig unter einer laufenden Aufloesung wegziehen.
+          git push -f origin "origin/main:refs/heads/$SYNC_ZWEIG"
           # Body ueber eine Datei, nicht inline: ein mehrzeiliger --body-String
           # sprengt den YAML-Block, und Backticks darin wuerden von der Shell
           # als Kommando-Substitution ausgefuehrt.
@@ -88,6 +100,6 @@ jobs:
           Bitte von Hand aufloesen und mergen. Der Job laeuft danach wieder von
           selbst.
           ENDE
-          gh pr create --base dev --head main \
+          gh pr create --base dev --head "$SYNC_ZWEIG" \
             --title "dev hinkt main hinterher — Merge braucht Handarbeit" \
             --body-file /tmp/pr-body.md
