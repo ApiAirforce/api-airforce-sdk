@@ -61,6 +61,18 @@ permissions:
   contents: write
   issues: write
   actions: read
+  # OHNE DIESE ZEILE PRUEFT DAS TOR NICHTS. Ein `permissions:`-Block setzt
+  # alles Nicht-Genannte auf `none`; `/commits/<sha>/check-runs` antwortet dann
+  # mit 403. Gemessen am 23.08.2026: in allen fuenf PRIVATEN Repos meldete das
+  # Tor daraufhin "Pruefungen laufen noch", obwohl jede Pruefung seit anderthalb
+  # Stunden gruen war. Im OEFFENTLICHEN sdk-Repo fiel es nicht auf, weil
+  # Check-Runs dort ohnehin fuer jeden lesbar sind - ein Unterschied, der die
+  # Ursache lange verdeckt hat.
+  checks: read
+  # Aeltere Ablaeufe melden ueber die Status-API statt als Check-Run. Heute
+  # nutzt das hier niemand; die Zeile kostet nichts und verhindert, dass
+  # dieselbe stille Luecke ueber den anderen Weg zurueckkommt.
+  statuses: read
 
 # Ein wartender Lauf genuegt. Der neueste dev-Stand ist der, der nach `test`
 # soll - ein aelterer Waerter waere nur noch Ballast auf dem Runner.
@@ -128,14 +140,23 @@ jobs:
                   return None
               return r.stdout.strip()
 
-          def gh_json(pfad, *extra):
+          def gh_json(pfad, *extra, laut=False):
               r = subprocess.run(["gh", "api", pfad, *extra],
                                  capture_output=True, text=True)
               if r.returncode != 0:
+                  # `laut` fuer die Abfragen, deren Fehlschlag das Urteil
+                  # verfaelscht statt es nur zu verkuerzen. Ein stilles None
+                  # sah hier aus wie "keine Pruefung gefunden" und damit wie
+                  # "laeuft noch" - der Lauf war gruen und hatte nichts geprueft.
+                  if laut:
+                      print("::error::gh api %s -> %s"
+                            % (pfad, (r.stderr or r.stdout).strip()[:300]))
                   return None
               try:
                   return json.loads(r.stdout)
               except Exception:
+                  if laut:
+                      print("::error::gh api %s lieferte kein JSON" % pfad)
                   return None
 
           def bericht(grund, zeilen):
@@ -222,7 +243,21 @@ jobs:
 
           # ---- Punkt 1: Pflicht-Pruefungen ----------------------------------
           def stand(sha):
-              d = gh_json("repos/%s/commits/%s/check-runs?per_page=100" % (REPO, sha)) or {}
+              d = gh_json("repos/%s/commits/%s/check-runs?per_page=100" % (REPO, sha),
+                          laut=True)
+              if d is None:
+                  # NICHT als "laeuft noch" durchgehen lassen: das waere ein
+                  # Urteil ueber Pruefungen, die gar nicht gelesen wurden.
+                  bericht("Das Tor konnte die Pruefungen NICHT LESEN.",
+                          ["Die Abfrage der Check-Runs ist fehlgeschlagen - der Fehler steht",
+                           "als `::error::` im Lauf-Protokoll.",
+                           "",
+                           "Das ist ein Defekt am Tor, kein Zustand von `dev`. Haeufigste",
+                           "Ursache: dem Token fehlt `checks: read` im `permissions:`-Block.",
+                           "",
+                           "Solange das steht, faellt NICHTS durch das Tor - es haelt zu, statt",
+                           "ungeprueft durchzuwinken."])
+                  sys.exit(1)
               letzte = {}
               for c in d.get("check_runs", []):
                   n = c.get("name") or ""
