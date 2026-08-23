@@ -33,16 +33,17 @@
 # `workflow_run` und `schedule` lesen die Datei IMMER vom Vorgabe-Zweig (`main`).
 # Solange dieses Tor dort nicht liegt, feuert davon nichts - genau die Falle, in
 # die review-audit.yml am 23.08. gelaufen ist. Ein `push`-Ausloeser dagegen nimmt
-# die Datei des GESCHOBENEN Zweiges und wirkt sofort. Der Preis ist die
-# Warteschleife auf die Pruefungen; `cancel-in-progress` haelt sie auf EINEN
-# wartenden Lauf begrenzt, und der neueste Push gewinnt - genau das ist gewollt.
-# Sobald die Datei auf `main` liegt, uebernimmt `workflow_run` ohne Wartezeit.
+# die Datei des GESCHOBENEN Zweiges und wirkt sofort. Der Preis: beim Push
+# laufen die Pruefungen oft noch. Dieser Ablauf WARTET dann NICHT - er gibt den
+# Runner frei und laesst sich vom naechsten Push erneut anstossen (Begruendung
+# an der Stelle im Code). Sobald die Datei auf `main` liegt, uebernimmt
+# `workflow_run` und trifft den Zeitpunkt exakt.
 # ============================================================================
 
 # HINWEIS ZU DIESEM OEFFENTLICHEN REPO: die Datei ist bis auf zwei Zeilen
-# ZEICHENGLEICH mit der in den beiden Anwendungs-Repos - eine Vorlage, drei
-# Instanzen, damit es nur EINE Umsetzung gibt. Die zwei Unterschiede sind noetig:
-# `ubuntu-latest` statt des eigenen Runners (ein self-hosted Runner an einem
+# ZEICHENGLEICH mit der in den anderen Repos - eine Vorlage, viele Instanzen,
+# damit es nur EINE Umsetzung gibt. Die zwei Unterschiede sind noetig:
+# `ubuntu-latest` statt eines eigenen Runners (ein self-hosted Runner an einem
 # oeffentlichen Repo ist ueber einen Fork-PR angreifbar), und DURCHSICHT_NOETIG
 # steht auf `nein`, weil es hier kein review-push.yml gibt.
 
@@ -81,7 +82,6 @@ env:
     Dart
     Rust
   TITEL: 'dev kommt nicht nach test'
-  WARTEN_MIN: '30'
   # `nein` NUR fuer Repos ohne review-push.yml. Dort gibt es an einem
   # Direkt-Push gar keine Durchsicht, die das Tor finden koennte - es wuerde
   # jeden Commit als "ohne Durchsicht" melden und nie aufgehen. Das Tor
@@ -113,7 +113,6 @@ jobs:
           TITEL = os.environ["TITEL"]
           EREIGNIS = os.environ.get("EREIGNIS") or ""
           WR_ZWEIG = os.environ.get("WR_ZWEIG") or ""
-          WARTEN = int(os.environ.get("WARTEN_MIN") or 30) * 60
           PFLICHT = [z.strip() for z in (os.environ.get("PFLICHT") or "").splitlines()
                      if z.strip()]
           CODE = (".rs", ".ts", ".tsx", ".js", ".mjs", ".py", ".sql", ".toml",
@@ -233,28 +232,38 @@ jobs:
                       letzte[n] = c
               return letzte
 
-          schluss = time.monotonic() + WARTEN
-          while True:
-              st = stand(dev)
-              offen = [n for n in PFLICHT
-                       if st.get(n, {}).get("status") != "completed"]
-              if not offen:
-                  break
-              if git("rev-parse", "origin/dev") != dev:
-                  print("dev ist weitergelaufen - ein neuerer Lauf uebernimmt.")
-                  sys.exit(0)
-              if time.monotonic() > schluss:
-                  bericht(
-                      "Pruefungen auf dem `dev`-Kopf sind nach %d min nicht fertig." % (WARTEN // 60),
-                      ["Offen: " + ", ".join("`%s`" % n for n in offen),
-                       "",
-                       "Das ist kein gruenes `dev` - es ist ein `dev` ohne Aussage. Meist",
-                       "haengt ein Lauf oder es wurde keiner zugewiesen.",
-                       "",
-                       "Stand: `%s`" % dev[:8]])
-                  sys.exit(0)
-              subprocess.run(["git", "fetch", "origin", "--prune"], capture_output=True)
-              time.sleep(30)
+          # EINMAL SCHAUEN, NICHT WARTEN.
+          #
+          # Hier stand eine Warteschleife von 30 min. Sie war ein Defekt, und
+          # zwar ein selbstblockierender: gemessen am 23.08. hat JEDES Repo
+          # genau EINEN eigenen Runner (Backend 3, Frontend 2). Solange dieser
+          # Job wartet, HAELT er den einzigen Runner - und die Pruefungen, auf
+          # die er wartet, brauchen genau diesen Runner. Belegt an vier Repos:
+          # CI stand ueber eine Stunde in der Warteschlange, waehrend das Tor
+          # danebensass und auf sie wartete.
+          #
+          # Also: einmal messen, und wenn die Pruefungen noch laufen, den
+          # Runner sofort wieder freigeben. Der naechste `dev`-Push stoesst das
+          # Tor ohnehin erneut an, und sobald diese Datei auf `main` liegt,
+          # uebernimmt `workflow_run` und trifft den Zeitpunkt exakt.
+          st = stand(dev)
+          offen = [n for n in PFLICHT if st.get(n, {}).get("status") != "completed"]
+          if offen:
+              bericht(
+                  "Die Pruefungen auf dem `dev`-Kopf laufen noch.",
+                  ["Noch nicht fertig: " + ", ".join("`%s`" % n for n in offen),
+                   "",
+                   "Das ist KEIN Befund - nur ein zu frueher Blick. Dieser Lauf gibt den",
+                   "Runner sofort wieder frei, damit die Pruefungen ihn bekommen.",
+                   "",
+                   "Weiter geht es von selbst: der naechste Push auf `dev` stoesst das Tor",
+                   "erneut an. Wer nicht warten will, startet *promote to test* von Hand.",
+                   "",
+                   "Bleibt diese Meldung ueber Stunden stehen, ist es doch ein Befund -",
+                   "dann laeuft keine Pruefung an, und `dev` hat keine Aussage.",
+                   "",
+                   "Stand: `%s`" % dev[:8]])
+              sys.exit(0)
 
           # `skipped`/`neutral` sind kein Fehlschlag: ein Job, den sein eigenes `if`
           # ausgelassen hat, hat nichts zu sagen - er darf aber auch nichts blockieren.
