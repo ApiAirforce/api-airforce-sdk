@@ -6,7 +6,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `dev` und `test` gehoeren dazu, seit die Kette dev -> test -> main gilt:
+    # das Tor in promote-to-test.yml liest die Check-Runs am dev-Kopf. Liefe CI
+    # weiterhin nur auf `main`, faende es dort NICHTS - und ein Tor, das nichts
+    # findet, geht nie auf.
+    branches: [main, dev, test]
   pull_request:
 
 permissions:

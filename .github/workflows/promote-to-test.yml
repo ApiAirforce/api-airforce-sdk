@@ -1,0 +1,363 @@
+# ============================================================================
+# DAS TOR ZWISCHEN `dev` UND `test`.
+#
+# DIE KETTE (anes-Entscheid 2026-08-23):
+#
+#     dev  ->  [dieses Tor]  ->  test  ->  [Abnahme]  ->  main = prod
+#
+#   `dev`   bleibt offen. Jedes Fenster pusht weiter direkt, kein PR-Zwang.
+#   `test`  ist der EINGEFRORENE Kandidat. Hier wird funktional abgenommen.
+#   `main`  ist die Auslieferung.
+#
+# WARUM EIN EINGEFRORENER ZWEIG UND NICHT EINFACH `dev`: solange `dev` waehrend
+# der Pruefung weiterlaeuft, sind "geprueft" und "ausgeliefert" nie derselbe
+# Baum. Man prueft dann einen Stand, den niemand ausliefert, und liefert einen
+# aus, den niemand geprueft hat. `test` steht still, bis er abgenommen ist.
+#
+# WAS DIESES TOR VERLANGT, alle drei Punkte:
+#   1. Jede PFLICHT-Pruefung ist auf dem dev-Kopf gruen.
+#   2. Jeder Code-Commit, der mitfaehrt, hat seine automatische Durchsicht.
+#   3. Kein Befund der Schwere `hoch` ist unbeantwortet.
+#
+# ES GIBT KEINEN UMWEG. Kein `--force`, kein Cherry-Pick, keine Ausnahme-Eingabe.
+# `test` wird VORGESPULT, nie gemergt - damit `main`, `test` und `dev` strukturell
+# nicht auseinanderlaufen koennen (dieselbe Begruendung wie in release-to-main.yml,
+# anes-Ansage 2026-08-18).
+#
+# WAS PASSIERT, WENN DAS TOR ZU IST: dieser Lauf wird NICHT rot - ein zugehaltenes
+# Tor ist der Normalfall, kein Defekt. Stattdessen steht der Grund in EINEM
+# selbstschliessenden Issue. Das ist zugleich der Waechter ueber `dev`: wer ein
+# rotes `dev` hinterlaesst, blockiert die Auslieferung ALLER - und erfaehrt es hier.
+#
+# WARUM DER `push`-AUSLOESER MIT WARTESCHLEIFE:
+# `workflow_run` und `schedule` lesen die Datei IMMER vom Vorgabe-Zweig (`main`).
+# Solange dieses Tor dort nicht liegt, feuert davon nichts - genau die Falle, in
+# die review-audit.yml am 23.08. gelaufen ist. Ein `push`-Ausloeser dagegen nimmt
+# die Datei des GESCHOBENEN Zweiges und wirkt sofort. Der Preis ist die
+# Warteschleife auf die Pruefungen; `cancel-in-progress` haelt sie auf EINEN
+# wartenden Lauf begrenzt, und der neueste Push gewinnt - genau das ist gewollt.
+# Sobald die Datei auf `main` liegt, uebernimmt `workflow_run` ohne Wartezeit.
+# ============================================================================
+
+# HINWEIS ZU DIESEM OEFFENTLICHEN REPO: die Datei ist bis auf zwei Zeilen
+# ZEICHENGLEICH mit der in den beiden Anwendungs-Repos - eine Vorlage, drei
+# Instanzen, damit es nur EINE Umsetzung gibt. Die zwei Unterschiede sind noetig:
+# `ubuntu-latest` statt des eigenen Runners (ein self-hosted Runner an einem
+# oeffentlichen Repo ist ueber einen Fork-PR angreifbar), und DURCHSICHT_NOETIG
+# steht auf `nein`, weil es hier kein review-push.yml gibt.
+
+name: promote to test
+
+on:
+  push:
+    branches: [dev]
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  actions: read
+
+# Ein wartender Lauf genuegt. Der neueste dev-Stand ist der, der nach `test`
+# soll - ein aelterer Waerter waere nur noch Ballast auf dem Runner.
+concurrency:
+  group: promote-to-test
+  cancel-in-progress: true
+
+env:
+  # Die Namen sind die ANGEZEIGTEN Job-Namen, so wie sie als Check-Run erscheinen.
+  # Bewusst NICHT dabei: `review` - ein roter Durchsichts-Lauf sagt nichts darueber,
+  # ob eine Durchsicht am Commit steht. Das prueft Punkt 2 direkt am Commit.
+  PFLICHT: |
+    TypeScript
+    Java
+    Go
+    Python
+    C#
+    PHP
+    Dart
+    Rust
+  TITEL: 'dev kommt nicht nach test'
+  WARTEN_MIN: '30'
+  # `nein` NUR fuer Repos ohne review-push.yml. Dort gibt es an einem
+  # Direkt-Push gar keine Durchsicht, die das Tor finden koennte - es wuerde
+  # jeden Commit als "ohne Durchsicht" melden und nie aufgehen. Das Tor
+  # verlangt dann die Pruefungen, und nur die. Wer den Reviewer dort
+  # nachruestet, stellt das hier auf `ja`.
+  DURCHSICHT_NOETIG: 'nein'
+
+jobs:
+  tor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: dev
+
+      - name: Tor pruefen und test vorspulen
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EREIGNIS: ${{ github.event_name }}
+          WR_ZWEIG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          python3 - <<'PYEOF'
+          import json, os, re, subprocess, sys, time
+
+          REPO = os.environ["REPO"]
+          TITEL = os.environ["TITEL"]
+          EREIGNIS = os.environ.get("EREIGNIS") or ""
+          WR_ZWEIG = os.environ.get("WR_ZWEIG") or ""
+          WARTEN = int(os.environ.get("WARTEN_MIN") or 30) * 60
+          PFLICHT = [z.strip() for z in (os.environ.get("PFLICHT") or "").splitlines()
+                     if z.strip()]
+          CODE = (".rs", ".ts", ".tsx", ".js", ".mjs", ".py", ".sql", ".toml",
+                  ".yml", ".yaml", ".json")
+          TRENN = "\x1f"
+
+          def git(*a, check=True):
+              r = subprocess.run(["git", *a], capture_output=True, text=True)
+              if r.returncode != 0:
+                  if check:
+                      print("git %s: %s" % (" ".join(a), r.stderr.strip()[:200]),
+                            file=sys.stderr)
+                  return None
+              return r.stdout.strip()
+
+          def gh_json(pfad, *extra):
+              r = subprocess.run(["gh", "api", pfad, *extra],
+                                 capture_output=True, text=True)
+              if r.returncode != 0:
+                  return None
+              try:
+                  return json.loads(r.stdout)
+              except Exception:
+                  return None
+
+          def bericht(grund, zeilen):
+              """Ein Issue statt eines roten Laufs - siehe Kopf."""
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+                  f.write("## %s\n\n%s\n\n%s\n" % (TITEL, grund, "\n".join(zeilen)))
+              print(grund)
+              for z in zeilen:
+                  print("  " + z)
+              koerper = ["**%s**" % grund, ""] + zeilen + [
+                  "",
+                  "_Dieses Issue schliesst sich selbst, sobald `test` vorgespult wurde._",
+                  "_Es ist kein Defekt dieses Ablaufs, sondern der Zustand von `dev`._",
+              ]
+              alt = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
+              nummer = next((i["number"] for i in alt
+                             if i.get("title") == TITEL and "pull_request" not in i), None)
+              if nummer:
+                  subprocess.run(["gh", "issue", "edit", str(nummer), "-R", REPO,
+                                  "--body", "\n".join(koerper)],
+                                 capture_output=True, text=True)
+              else:
+                  subprocess.run(["gh", "issue", "create", "-R", REPO,
+                                  "--title", TITEL, "--body", "\n".join(koerper)],
+                                 capture_output=True, text=True)
+
+          def issue_zu(text):
+              alt = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
+              nummer = next((i["number"] for i in alt
+                             if i.get("title") == TITEL and "pull_request" not in i), None)
+              if nummer:
+                  subprocess.run(["gh", "issue", "close", str(nummer), "-R", REPO,
+                                  "--comment", text], capture_output=True, text=True)
+
+          # `workflow_run` feuert fuer JEDEN Zweig. Nur `dev` ist gemeint.
+          if EREIGNIS == "workflow_run" and WR_ZWEIG != "dev":
+              print("workflow_run kam von '%s', nicht von dev - nichts zu tun." % WR_ZWEIG)
+              sys.exit(0)
+
+          subprocess.run(["git", "fetch", "origin", "--prune"], capture_output=True)
+          dev = git("rev-parse", "origin/dev")
+          main = git("rev-parse", "origin/main")
+          test = git("rev-parse", "--verify", "-q", "origin/test", check=False)
+
+          if not dev or not main:
+              print("::error::dev oder main nicht aufloesbar.")
+              sys.exit(1)
+
+          # Ohne `test` ist `main` die Basis - der erste Durchlauf legt den Zweig an.
+          basis = test or main
+          neu = test is None
+
+          if dev == basis:
+              issue_zu("`test` steht auf dem Stand von `dev` - nichts offen.")
+              print("test == dev, nichts zu tun.")
+              sys.exit(0)
+
+          if git("merge-base", "--is-ancestor", basis, dev, check=False) is None:
+              bericht(
+                  "`dev` kann `test` nicht vorspulen - die Zweige sind auseinandergelaufen.",
+                  ["Das darf in dieser Kette nicht vorkommen: `main` -> `test` -> `dev` sind",
+                   "reine Vorspulungen. Wer hier landet, hat auf `test` oder `main` etwas",
+                   "abgelegt, das nicht ueber `dev` kam.",
+                   "",
+                   "Reparatur: den fremden Stand nach `dev` holen (Merge auf `dev`), dann",
+                   "laeuft das Tor wieder. **Kein Cherry-Pick.**"])
+              sys.exit(0)
+
+          # Ein Kandidat, der noch nicht ausgeliefert ist, wird NICHT ueberholt -
+          # sonst pruefte man wieder einen Baum, der sich unter der Hand aendert.
+          if test and test != main and EREIGNIS != "workflow_dispatch":
+              offen = git("rev-list", "--count", "%s..%s" % (main, test)) or "?"
+              bericht(
+                  "`test` traegt einen Kandidaten, der noch nicht ausgeliefert ist.",
+                  ["`test` ist %s Commit(s) vor `main`. Solange dort etwas auf die Abnahme" % offen,
+                   "wartet, wird es nicht ueberholt - ein Kandidat, der sich unter der",
+                   "Pruefung aendert, ist kein Kandidat.",
+                   "",
+                   "**Naechster Schritt: abnehmen und ausliefern** (`release to main` bzw.",
+                   "`promote-to-main`). Danach zieht dieses Tor den naechsten Stand von",
+                   "selbst nach. Wer den Kandidaten bewusst verwerfen und durch den neuesten",
+                   "`dev`-Stand ersetzen will: diesen Ablauf von Hand starten."])
+              sys.exit(0)
+
+          # ---- Punkt 1: Pflicht-Pruefungen ----------------------------------
+          def stand(sha):
+              d = gh_json("repos/%s/commits/%s/check-runs?per_page=100" % (REPO, sha)) or {}
+              letzte = {}
+              for c in d.get("check_runs", []):
+                  n = c.get("name") or ""
+                  vor = letzte.get(n)
+                  # Bei einem Neustart zaehlt der juengste Lauf desselben Namens.
+                  if vor is None or (c.get("started_at") or "") > (vor.get("started_at") or ""):
+                      letzte[n] = c
+              return letzte
+
+          schluss = time.monotonic() + WARTEN
+          while True:
+              st = stand(dev)
+              offen = [n for n in PFLICHT
+                       if st.get(n, {}).get("status") != "completed"]
+              if not offen:
+                  break
+              if git("rev-parse", "origin/dev") != dev:
+                  print("dev ist weitergelaufen - ein neuerer Lauf uebernimmt.")
+                  sys.exit(0)
+              if time.monotonic() > schluss:
+                  bericht(
+                      "Pruefungen auf dem `dev`-Kopf sind nach %d min nicht fertig." % (WARTEN // 60),
+                      ["Offen: " + ", ".join("`%s`" % n for n in offen),
+                       "",
+                       "Das ist kein gruenes `dev` - es ist ein `dev` ohne Aussage. Meist",
+                       "haengt ein Lauf oder es wurde keiner zugewiesen.",
+                       "",
+                       "Stand: `%s`" % dev[:8]])
+                  sys.exit(0)
+              subprocess.run(["git", "fetch", "origin", "--prune"], capture_output=True)
+              time.sleep(30)
+
+          # `skipped`/`neutral` sind kein Fehlschlag: ein Job, den sein eigenes `if`
+          # ausgelassen hat, hat nichts zu sagen - er darf aber auch nichts blockieren.
+          rot = [n for n in PFLICHT
+                 if st.get(n, {}).get("conclusion") not in ("success", "skipped", "neutral")]
+          if rot:
+              zeilen = ["Rot auf `%s`:" % dev[:8], ""]
+              for n in rot:
+                  c = st.get(n, {})
+                  zeilen.append("- `%s` -> **%s**  %s"
+                                % (n, c.get("conclusion") or "fehlt",
+                                   c.get("html_url") or ""))
+              zeilen += ["",
+                         "Solange das steht, kommt NICHTS nach `test` und damit nichts zu",
+                         "Kunden - auch die Arbeit der anderen Fenster nicht. Deshalb muss",
+                         "`dev` jederzeit auslieferbar sein."]
+              bericht("`dev` ist rot.", zeilen)
+              sys.exit(0)
+
+          # ---- Punkt 2+3: Durchsicht und offene Befunde ---------------------
+          ohne, hoch = [], []
+          if (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() != "ja":
+              print("Durchsicht wird in diesem Repo nicht verlangt (kein review-push.yml).")
+              roh = ""
+          else:
+              roh = git("log", "%s..%s" % (basis, dev),
+                        "--format=%H" + TRENN + "%an" + TRENN + "%s") or ""
+              for zeile in roh.splitlines():
+                  teile = zeile.split(TRENN)
+                  if len(teile) != 3:
+                      continue
+                  sha, autor, betreff = teile
+                  if autor.endswith("[bot]") or autor in ("github-actions", "dependabot"):
+                      continue
+                  eltern = (git("rev-list", "--parents", "-1", sha) or "").split()[1:]
+                  if len(eltern) > 1:
+                      pulls = gh_json("repos/%s/commits/%s/pulls" % (REPO, sha)) or []
+                      if any(p.get("merged_at") and p.get("merge_commit_sha") == sha
+                             for p in pulls):
+                          continue
+                  # `--first-parent -m`: ohne die Flaggen gibt `git show` bei einem MERGE
+                  # gar nichts aus, und jeder Merge sieht code-frei aus.
+                  dateien = (git("show", "--name-only", "--format=",
+                                 "--first-parent", "-m", sha) or "").splitlines()
+                  if not any(d.endswith(CODE) for d in dateien):
+                      continue
+
+                  komm = gh_json("repos/%s/commits/%s/comments?per_page=100" % (REPO, sha)) or []
+                  durch = [c for c in komm
+                           if "airforce-review-push" in (c.get("body") or "")
+                           or "Automatische Durchsicht" in (c.get("body") or "")]
+                  if not durch:
+                      ohne.append((sha, betreff))
+                      continue
+
+                  juengste = max(durch, key=lambda c: c.get("created_at") or "")
+                  koerper = juengste.get("body") or ""
+                  m = re.search(r"airforce-schwere hoch=(\d+)", koerper)
+                  # Alt-Kommentare tragen die Marke nicht - dann die Tabelle lesen.
+                  # Fehlt die Marke, wird NICHT durchgewunken.
+                  anzahl = int(m.group(1)) if m else len(re.findall(r"\|\s*hoch\s*\|", koerper))
+                  if anzahl:
+                      beantwortet = any(
+                          (c.get("created_at") or "") > (juengste.get("created_at") or "")
+                          and re.search(r"#erledigt|#fehlalarm", c.get("body") or "", re.I)
+                          for c in komm)
+                      if not beantwortet:
+                          hoch.append((sha, betreff, anzahl,
+                                       juengste.get("html_url") or ""))
+
+          if ohne or hoch:
+              zeilen = []
+              if hoch:
+                  zeilen += ["**Offene Befunde der Schwere `hoch`** - erst beheben, dann geht es weiter:", ""]
+                  for sha, betreff, n, url in hoch:
+                      zeilen.append("- `%s` %d Befund(e) - %s  %s" % (sha[:8], n, betreff, url))
+                  zeilen += ["",
+                             "Schliessen: einen Kommentar an DIESEN Commit haengen, der",
+                             "`#erledigt` (behoben) oder `#fehlalarm` (mit Begruendung) enthaelt.",
+                             "Ein Fehlalarm ist eine zulaessige Antwort - ihn stillschweigend",
+                             "zu uebergehen ist es nicht.", ""]
+              if ohne:
+                  zeilen += ["**Ohne automatische Durchsicht:**", ""]
+                  for sha, betreff in ohne:
+                      zeilen.append("- `%s` %s" % (sha[:8], betreff))
+                  zeilen += ["",
+                             "Nachholen: `gh workflow run review-push.yml --ref dev -f sha=<SHA>`.", ""]
+              bericht("`dev` ist gruen, aber die Durchsicht ist nicht vollstaendig.", zeilen)
+              sys.exit(0)
+
+          # ---- Vorspulen ----------------------------------------------------
+          r = subprocess.run(["git", "push", "origin", "%s:refs/heads/test" % dev],
+                             capture_output=True, text=True)
+          if r.returncode != 0:
+              print("::error::Vorspulen von `test` fehlgeschlagen: %s" % r.stderr.strip()[:400])
+              sys.exit(1)
+
+          anzahl = git("rev-list", "--count", "%s..%s" % (basis, dev)) or "?"
+          text = ("`test` %s auf `%s` (%s Commit(s) aus `dev`). Alle Pflicht-Pruefungen "
+                  "gruen, jede Durchsicht da, kein offener Befund `hoch`."
+                  % ("angelegt" if neu else "vorgespult", dev[:8], anzahl))
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("## test vorgespult\n\n%s\n" % text)
+          issue_zu(text)
+          PYEOF
