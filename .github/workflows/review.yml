@@ -195,10 +195,10 @@ jobs:
               except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                   if PAUSEN:
                       p = PAUSEN.pop(0)
-                      print(f"netzfehler ({e.reason}) - neuer versuch in {p}s", file=sys.stderr)
+                      print(f"netzfehler ({getattr(e, 'reason', None) or type(e).__name__}) - neuer versuch in {p}s", file=sys.stderr)
                       time.sleep(p)
                       continue
-                  print(f"Model call failed: {e.reason}", file=sys.stderr)
+                  print(f"Model call failed: {getattr(e, 'reason', None) or type(e).__name__}", file=sys.stderr)
                   sys.exit(1)
 
           text = out["choices"][0]["message"]["content"] or ""
