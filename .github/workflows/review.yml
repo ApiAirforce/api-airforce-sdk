@@ -126,6 +126,18 @@ jobs:
                   + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
                   + diff)
 
+          class _LeererStrom(Exception):
+              """Der Strom lief, brachte aber keinen Text.
+
+              Eigene Klasse, damit die Wiederhol-Leiter sie NICHT als
+              Netzfehler behandelt: dreimal dieselbe leere Antwort zu
+              holen kostet nur Zeit - genau das ist im ersten Anlauf
+              passiert (5 s, 20 s, 60 s Pause, dreimal leer). Der
+              Aufrufer faellt stattdessen einmal auf den
+              nicht-stroemenden Weg zurueck.
+              """
+
+
           def _stroemen(payload):
               """Den Strom lesen und daraus dieselbe Form bauen wie sonst.
 
@@ -140,7 +152,7 @@ jobs:
                            "Content-Type": "application/json",
                            "Accept": "text/event-stream"},
                   method="POST")
-              stuecke, usage = [], {}
+              stuecke, usage, probe = [], {}, []
               # 180 s gilt hier je LESEVORGANG, nicht fuer den ganzen Aufruf:
               # solange Bytes kommen, laeuft er weiter. Eine Antwort darf also
               # zehn Minuten dauern - sie darf nur nicht drei Minuten schweigen.
@@ -158,18 +170,31 @@ jobs:
                           # Ein halbes Stueck ist kein Grund aufzugeben - der
                           # naechste Brocken bringt den Rest.
                           continue
+                      if len(probe) < 3:
+                          probe.append(nutz[:300])
                       if brocken.get("usage"):
                           usage = brocken["usage"]
                       for w in brocken.get("choices") or []:
-                          teil = (w.get("delta") or {}).get("content")
-                          if teil:
-                              stuecke.append(teil)
+                          # Nicht nur `delta.content`: ein Relay, das einen
+                          # nicht-stroemenden Aufruf durchreicht, legt den Text
+                          # nach `message.content`. Beide Formen mitnehmen,
+                          # statt sich auf eine zu verlassen, die niemand
+                          # gemessen hat.
+                          for feld in ("delta", "message"):
+                              teil = (w.get(feld) or {}).get("content")
+                              if teil:
+                                  stuecke.append(teil)
+                                  break
               text = "".join(stuecke)
               if not text.strip():
-                  # LAUT scheitern. Ein leerer Strom, der als leere Durchsicht
-                  # durchgeht, sieht aus wie "nichts gefunden" - genau die
-                  # Verwechslung, gegen die dieser Reviewer gebaut ist.
-                  raise urllib.error.URLError("leerer Strom vom Relay")
+                  # KEIN STILLES DURCHWINKEN, ABER AUCH KEIN TOTALAUSFALL.
+                  # Gemessen am 25.08.: das Relay nimmt `stream: true` an,
+                  # liefert aber keinen Text. Welche Form es stattdessen
+                  # schickt, steht ab jetzt im Protokoll - das ist der
+                  # einzige Weg, sie zu sehen statt sie zu raten.
+                  print("Strom ohne Inhalt. Erste Brocken: %r" % (probe,),
+                        file=sys.stderr)
+                  raise _LeererStrom("Strom ohne Inhalt")
               return {"choices": [{"message": {"content": text}}], "usage": usage}
 
           def call(payload):
@@ -195,6 +220,10 @@ jobs:
               strom["stream_options"] = {"include_usage": True}
               try:
                   return _stroemen(strom)
+              except _LeererStrom:
+                  # Einmal ohne Strom. Besser eine langsame Durchsicht als
+                  # gar keine; die Probe im Protokoll sagt, warum.
+                  print("Strom leer - einmal ohne", file=sys.stderr)
               except urllib.error.HTTPError as e:
                   # Kennt das Relay `stream` nicht, ist das KEIN fluechtiger
                   # Fehler - einmal ohne das Feld, dann weiter wie frueher. Ein
