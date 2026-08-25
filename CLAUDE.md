@@ -47,10 +47,15 @@ language only is a bug — users compare them side by side.
 2. **A push made by a bot triggers nothing at all** — by GitHub's design, a push
    authenticated with `GITHUB_TOKEN` starts no workflows. If the newest `dev`
    commit came from the sync bot, the chain stalls until a human pushes.
-3. **The default branch is `main`.** `schedule`, `workflow_run` **and**
-   `workflow_dispatch` always read the workflow file from the default branch —
-   never from the branch you select. A workflow change that only exists on `dev`
-   is invisible until it has been released.
+3. **The default branch is `main` — for `schedule` and `workflow_run`.** Those
+   two always read the workflow file from the default branch, never from the
+   branch concerned. A change to a scheduled or downstream workflow that only
+   exists on `dev` therefore takes effect only after a release.
+   **`workflow_dispatch` behaves differently**, and that is the useful exception:
+   it runs the version from the ref you name. Measured on 2026-08-25 —
+   `gh workflow run … --ref dev` produced a run on the head of `dev`, not on
+   `main`. A workflow only has to **exist** on the default branch to be
+   dispatchable at all; one that is new and missing there is invisible.
 
 ## House rules
 
