@@ -126,6 +126,29 @@ jobs:
                   + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
                   + diff)
 
+          class _RelayFehler(Exception):
+              """Das Relay meldete einen Fehler - mit HTTP 200 im Rumpf.
+
+              Gemessen: `{"error":{"type":"rate_limit_error"}}` kam
+              mit Status 200 zurueck. Die Wiederhol-Leiter kennt nur
+              HTTPError und Netzfehler und sah darin keinen Fehler - der
+              Aufruf fiel auf den nicht-stroemenden Weg, bekam dasselbe
+              und lief ins Job-Zeitlimit. EIN 2XX BELEGT KEINE LIEFERUNG.
+              """
+
+
+          def _relay_fehler(d):
+              """Traegt die Antwort ein Fehlerobjekt? Dann den Text davon."""
+              if not isinstance(d, dict):
+                  return None
+              f = d.get("error")
+              if not f:
+                  return None
+              if isinstance(f, dict):
+                  return str(f.get("message") or f.get("type") or f)[:200]
+              return str(f)[:200]
+
+
           class _StromUnbrauchbar(Exception):
               """Der Strom ist nicht als Durchsicht verwendbar.
 
@@ -225,6 +248,12 @@ jobs:
                           continue
                       if len(probe) < 3:
                           probe.append(nutz[:300])
+                      _f = _relay_fehler(brocken)
+                      if _f:
+                          # Ein Fehlerobjekt im Strom ist kein leerer Strom.
+                          # Als solcher behandelt fuehrte es zum Rueckfall,
+                          # der denselben Fehler holt - und ins Zeitlimit.
+                          raise _RelayFehler(_f)
                       if brocken.get("usage"):
                           usage = brocken["usage"]
                       for w in brocken.get("choices") or []:
@@ -309,7 +338,15 @@ jobs:
                            "Content-Type": "application/json"},
                   method="POST")
               with urllib.request.urlopen(req, timeout=300) as resp:
-                  return json.load(resp)
+                  _ganz = json.load(resp)
+              # AUCH HIER: Status 200, Fehler im Rumpf. Ohne diese Pruefung
+              # gaebe `out` ein Objekt ohne `choices` zurueck und der
+              # Reviewer stuerbe weiter unten an einem KeyError statt an
+              # dem Fehler, der wirklich vorliegt.
+              _f = _relay_fehler(_ganz)
+              if _f:
+                  raise _RelayFehler(_f)
+              return _ganz
 
           payload = {"model": MODEL,
                      "messages": [{"role": "system", "content": system},
@@ -328,6 +365,19 @@ jobs:
           while out is None:
               try:
                   out = call(payload)
+              except _RelayFehler as e:
+                  # HTTP 200, Fehler im Rumpf - fluechtig wie ein 429, nur
+                  # ohne Statuscode. Dieselbe Leiter, damit ein Ratenlimit
+                  # nicht mehr als Zeitlimit endet.
+                  if PAUSEN:
+                      p = PAUSEN.pop(0)
+                      print(f"relay meldete \"{e}\" (HTTP 200) - neuer versuch in {p}s",
+                            file=sys.stderr)
+                      time.sleep(p)
+                      continue
+                  print(f"Model call failed: relay meldete {e!s} bei HTTP 200",
+                        file=sys.stderr)
+                  sys.exit(1)
               except urllib.error.HTTPError as e:
                   # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
                   # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
