@@ -160,6 +160,29 @@ jobs:
               # solange Bytes kommen, laeuft er weiter. Eine Antwort darf also
               # zehn Minuten dauern - sie darf nur nicht drei Minuten schweigen.
               with urllib.request.urlopen(req, timeout=180) as resp:
+                  # WER `stream: true` IGNORIERT, SCHICKT NORMALES JSON.
+                  # Dann beginnt keine Zeile mit `data:` - unten wuerde
+                  # ALLES verworfen, `probe` bliebe leer, und derselbe
+                  # Prompt ginge ein ZWEITES Mal raus. Die erste Antwort
+                  # ist zu dem Zeitpunkt schon erzeugt UND ABGERECHNET.
+                  # Also am Inhaltstyp erkennen und direkt uebernehmen -
+                  # das ist zugleich der `message.content`-Weg, den der
+                  # Kommentar weiter unten vorsieht.
+                  if "event-stream" not in (resp.headers.get_content_type() or ""):
+                      try:
+                          ganz = json.loads(resp.read().decode("utf-8", "replace"))
+                      except ValueError:
+                          raise _StromUnbrauchbar("Antwort war weder SSE noch JSON")
+                      w = (ganz.get("choices") or [{}])[0]
+                      t = (((w.get("message") or {}).get("content") or "")
+                           or ((w.get("delta") or {}).get("content") or ""))
+                      if not t.strip():
+                          raise _StromUnbrauchbar(
+                              "Antwort ohne Strom und ohne Inhalt")
+                      print("relay stroemt nicht - Antwort direkt uebernommen",
+                            file=sys.stderr)
+                      return {"choices": [{"message": {"content": t}}],
+                              "usage": ganz.get("usage") or {}}
                   for roh in resp:
                       zeile = roh.decode("utf-8", "replace").strip()
                       if not zeile.startswith("data:"):
@@ -242,10 +265,14 @@ jobs:
               strom["stream_options"] = {"include_usage": True}
               try:
                   return _stroemen(strom)
-              except _StromUnbrauchbar:
+              except _StromUnbrauchbar as e:
                   # Einmal ohne Strom. Besser eine langsame Durchsicht als
-                  # gar keine; die Probe im Protokoll sagt, warum.
-                  print("Strom leer - einmal ohne", file=sys.stderr)
+                  # gar keine - und der GRUND gehoert ins Protokoll. Seit
+                  # die Ausnahme auch "EOF ohne [DONE]" und unlesbare
+                  # Ereignisse abdeckt, waere "leer" bei zwei von drei
+                  # Faellen gelogen und die Diagnose unsichtbar.
+                  print("Strom unbrauchbar (%s) - einmal ohne" % e,
+                        file=sys.stderr)
               except urllib.error.HTTPError as e:
                   # Kennt das Relay `stream` nicht, ist das KEIN fluechtiger
                   # Fehler - einmal ohne das Feld, dann weiter wie frueher. Ein
