@@ -126,8 +126,8 @@ jobs:
                   + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
                   + diff)
 
-          class _LeererStrom(Exception):
-              """Der Strom lief, brachte aber keinen Text.
+          class _StromUnbrauchbar(Exception):
+              """Der Strom ist nicht als Durchsicht verwendbar.
 
               Eigene Klasse, damit die Wiederhol-Leiter sie NICHT als
               Netzfehler behandelt: dreimal dieselbe leere Antwort zu
@@ -153,6 +153,9 @@ jobs:
                            "Accept": "text/event-stream"},
                   method="POST")
               stuecke, usage, probe = [], {}, []
+              # `fertig` haelt fest, ob der Strom ORDENTLICH endete.
+              # `kaputt` zaehlt Ereignisse, die sich nicht lesen liessen.
+              fertig, kaputt = False, 0
               # 180 s gilt hier je LESEVORGANG, nicht fuer den ganzen Aufruf:
               # solange Bytes kommen, laeuft er weiter. Eine Antwort darf also
               # zehn Minuten dauern - sie darf nur nicht drei Minuten schweigen.
@@ -163,12 +166,18 @@ jobs:
                           continue
                       nutz = zeile[5:].strip()
                       if nutz == "[DONE]":
+                          fertig = True
                           break
                       try:
                           brocken = json.loads(nutz)
                       except ValueError:
-                          # Ein halbes Stueck ist kein Grund aufzugeben - der
-                          # naechste Brocken bringt den Rest.
+                          # HIER KOMMT KEIN REST NACH. `for roh in resp`
+                          # liefert VOLLSTAENDIGE Zeilen - ein halbes JSON
+                          # kann gar nicht ankommen, und der naechste
+                          # Brocken bringt nichts nach. Was hier scheitert,
+                          # ist endgueltig weg. Zaehlen statt verschweigen:
+                          # unten entscheidet es ueber den Rueckfall.
+                          kaputt += 1
                           continue
                       if len(probe) < 3:
                           probe.append(nutz[:300])
@@ -194,7 +203,20 @@ jobs:
                   # einzige Weg, sie zu sehen statt sie zu raten.
                   print("Strom ohne Inhalt. Erste Brocken: %r" % (probe,),
                         file=sys.stderr)
-                  raise _LeererStrom("Strom ohne Inhalt")
+                  raise _StromUnbrauchbar("Strom ohne Inhalt")
+              if not fertig:
+                  # EOF IST KEIN ABSCHLUSS. Ohne `[DONE]` steht hier zwar
+                  # Text, aber nur der Anfang - bricht eine Schicht den
+                  # Strom nach ein paar Deltas ab, sieht das Ergebnis wie
+                  # "wenig gefunden" aus. Genau die Verwechslung, gegen die
+                  # dieser Reviewer gebaut ist. Lieber langsam und ganz.
+                  raise _StromUnbrauchbar(
+                      "Strom endete ohne [DONE] nach %d Zeichen" % len(text))
+              if kaputt:
+                  # Ein unlesbares Ereignis kann Text getragen haben, der
+                  # jetzt fehlt. Eine Durchsicht mit Loechern ist schlimmer
+                  # als eine langsame.
+                  raise _StromUnbrauchbar("%d unlesbare Ereignisse im Strom" % kaputt)
               return {"choices": [{"message": {"content": text}}], "usage": usage}
 
           def call(payload):
@@ -220,7 +242,7 @@ jobs:
               strom["stream_options"] = {"include_usage": True}
               try:
                   return _stroemen(strom)
-              except _LeererStrom:
+              except _StromUnbrauchbar:
                   # Einmal ohne Strom. Besser eine langsame Durchsicht als
                   # gar keine; die Probe im Protokoll sagt, warum.
                   print("Strom leer - einmal ohne", file=sys.stderr)
