@@ -126,13 +126,90 @@ jobs:
                   + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
                   + diff)
 
+          def _stroemen(payload):
+              """Den Strom lesen und daraus dieselbe Form bauen wie sonst.
+
+              Der Rest des Skripts liest `out["choices"][0]["message"]["content"]`
+              und `out["usage"]` - beides wird hier zusammengesetzt, damit
+              stromab nichts angefasst werden muss.
+              """
+              req = urllib.request.Request(
+                  BASE + "/chat/completions",
+                  data=json.dumps(payload).encode(),
+                  headers={"Authorization": f"Bearer {KEY}",
+                           "Content-Type": "application/json",
+                           "Accept": "text/event-stream"},
+                  method="POST")
+              stuecke, usage = [], {}
+              # 180 s gilt hier je LESEVORGANG, nicht fuer den ganzen Aufruf:
+              # solange Bytes kommen, laeuft er weiter. Eine Antwort darf also
+              # zehn Minuten dauern - sie darf nur nicht drei Minuten schweigen.
+              with urllib.request.urlopen(req, timeout=180) as resp:
+                  for roh in resp:
+                      zeile = roh.decode("utf-8", "replace").strip()
+                      if not zeile.startswith("data:"):
+                          continue
+                      nutz = zeile[5:].strip()
+                      if nutz == "[DONE]":
+                          break
+                      try:
+                          brocken = json.loads(nutz)
+                      except ValueError:
+                          # Ein halbes Stueck ist kein Grund aufzugeben - der
+                          # naechste Brocken bringt den Rest.
+                          continue
+                      if brocken.get("usage"):
+                          usage = brocken["usage"]
+                      for w in brocken.get("choices") or []:
+                          teil = (w.get("delta") or {}).get("content")
+                          if teil:
+                              stuecke.append(teil)
+              text = "".join(stuecke)
+              if not text.strip():
+                  # LAUT scheitern. Ein leerer Strom, der als leere Durchsicht
+                  # durchgeht, sieht aus wie "nichts gefunden" - genau die
+                  # Verwechslung, gegen die dieser Reviewer gebaut ist.
+                  raise urllib.error.URLError("leerer Strom vom Relay")
+              return {"choices": [{"message": {"content": text}}], "usage": usage}
+
           def call(payload):
               req = urllib.request.Request(
                   BASE + "/chat/completions",
                   data=json.dumps(payload).encode(),
                   headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
                   method="POST")
-              with urllib.request.urlopen(req, timeout=600) as resp:
+              # STROEMEN, NICHT SCHWEIGEN (25.08.2026). Gemessen: unser Backend
+              # antwortet in 23-31 s (max 80 s) und protokollierte an einem Tag
+              # EINEN Fehler; nginx meldete EINEN 502. Die Reviewer-Jobs brauchten
+              # trotzdem 283 s im Schnitt, bis zu 1812 s, und 18 von 195 starben an
+              # `RemoteDisconnected` oder `TimeoutError` nach 600 s. Die
+              # gescheiterten Anfragen haben unser Backend also nie erreicht - eine
+              # Verbindung, ueber die minutenlang kein Byte geht, raeumt die Schicht
+              # davor ab, und der Client merkt es erst beim Lesen.
+              #
+              # Im Strom fliessen Bytes ab dem ersten Denkschritt. Der Deckel liegt
+              # damit auf dem ERSTEN BYTE statt auf der Gesamtdauer - eine
+              # Gesamtgrenze begrenzt kein Schweigen.
+              strom = dict(payload)
+              strom["stream"] = True
+              strom["stream_options"] = {"include_usage": True}
+              try:
+                  return _stroemen(strom)
+              except urllib.error.HTTPError as e:
+                  # Kennt das Relay `stream` nicht, ist das KEIN fluechtiger
+                  # Fehler - einmal ohne das Feld, dann weiter wie frueher. Ein
+                  # Reviewer, der an einer Verbesserung stirbt, ist schlechter
+                  # als der langsame davor.
+                  if e.code != 400:
+                      raise
+                  print("relay kennt stream nicht - einmal ohne", file=sys.stderr)
+              req = urllib.request.Request(
+                  BASE + "/chat/completions",
+                  data=json.dumps(payload).encode(),
+                  headers={"Authorization": f"Bearer {KEY}",
+                           "Content-Type": "application/json"},
+                  method="POST")
+              with urllib.request.urlopen(req, timeout=300) as resp:
                   return json.load(resp)
 
           payload = {"model": MODEL,
