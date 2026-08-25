@@ -126,6 +126,39 @@ jobs:
                   + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
                   + diff)
 
+          class _RelayFehler(Exception):
+              """Das Relay meldete einen Fehler - mit HTTP 200 im Rumpf.
+
+              `typ` traegt den maschinenlesbaren Fehlertyp, denn nicht
+              jeder 200er-Fehler ist ein Ratenlimit: ein Auth- oder
+              Anfragefehler aendert sich durch Warten nicht, und drei
+              Wiederholungen kosten dann nur 85 s fuer dieselbe Antwort.
+
+              Gemessen: `{"error":{"type":"rate_limit_error"}}` kam
+              mit Status 200 zurueck. Die Wiederhol-Leiter kennt nur
+              HTTPError und Netzfehler und sah darin keinen Fehler - der
+              Aufruf fiel auf den nicht-stroemenden Weg, bekam dasselbe
+              und lief ins Job-Zeitlimit. EIN 2XX BELEGT KEINE LIEFERUNG.
+              """
+
+              def __init__(self, text, typ=""):
+                  super().__init__(text)
+                  self.typ = (typ or "").lower()
+
+
+          def _relay_fehler(d):
+              """Traegt die Antwort ein Fehlerobjekt? Dann den Text davon."""
+              if not isinstance(d, dict):
+                  return None
+              f = d.get("error")
+              if not f:
+                  return None
+              if isinstance(f, dict):
+                  return (str(f.get("message") or f.get("type") or f)[:200],
+                          str(f.get("type") or ""))
+              return (str(f)[:200], "")
+
+
           class _StromUnbrauchbar(Exception):
               """Der Strom ist nicht als Durchsicht verwendbar.
 
@@ -173,6 +206,13 @@ jobs:
                           ganz = json.loads(resp.read().decode("utf-8", "replace"))
                       except ValueError:
                           raise _StromUnbrauchbar("Antwort war weder SSE noch JSON")
+                      _f = _relay_fehler(ganz)
+                      if _f:
+                          # Ein Fehlerobjekt hier ist KEIN unbrauchbarer
+                          # Strom: als solcher behandelt loeste es einen
+                          # unnoetigen Zweitaufruf aus, statt direkt auf
+                          # die Leiter zu gehen.
+                          raise _RelayFehler(*_f)
                       w = (ganz.get("choices") or [{}])[0]
                       t = (((w.get("message") or {}).get("content") or "")
                            or ((w.get("delta") or {}).get("content") or ""))
@@ -225,6 +265,12 @@ jobs:
                           continue
                       if len(probe) < 3:
                           probe.append(nutz[:300])
+                      _f = _relay_fehler(brocken)
+                      if _f:
+                          # Ein Fehlerobjekt im Strom ist kein leerer Strom.
+                          # Als solcher behandelt fuehrte es zum Rueckfall,
+                          # der denselben Fehler holt - und ins Zeitlimit.
+                          raise _RelayFehler(*_f)
                       if brocken.get("usage"):
                           usage = brocken["usage"]
                       for w in brocken.get("choices") or []:
@@ -309,7 +355,15 @@ jobs:
                            "Content-Type": "application/json"},
                   method="POST")
               with urllib.request.urlopen(req, timeout=300) as resp:
-                  return json.load(resp)
+                  _ganz = json.load(resp)
+              # AUCH HIER: Status 200, Fehler im Rumpf. Ohne diese Pruefung
+              # gaebe `out` ein Objekt ohne `choices` zurueck und der
+              # Reviewer stuerbe weiter unten an einem KeyError statt an
+              # dem Fehler, der wirklich vorliegt.
+              _f = _relay_fehler(_ganz)
+              if _f:
+                  raise _RelayFehler(*_f)
+              return _ganz
 
           payload = {"model": MODEL,
                      "messages": [{"role": "system", "content": system},
@@ -328,6 +382,50 @@ jobs:
           while out is None:
               try:
                   out = call(payload)
+              except _RelayFehler as e:
+                  # HTTP 200, Fehler im Rumpf. Ein Ratenlimit ist fluechtig
+                  # und gehoert auf die Leiter - ein Auth- oder Anfrage-
+                  # fehler aendert sich durch Warten nicht: 85 s Pause fuer
+                  # dreimal dieselbe Antwort, dann erst der laute Tod.
+                  # Der TYP entscheidet, nicht der Text - Fehlertexte sind
+                  # frei formuliert, eine Wortsuche darin klassifiziert
+                  # frueher oder spaeter falsch. Unbekannte Typen bleiben
+                  # auf der Leiter; die endet nach drei Versuchen laut.
+                  # `invalid_request_error` NICHT sofort fatal: der
+                  # HTTP-400-Zweig darunter besitzt eine Reparatur
+                  # (reasoning_effort max -> high -> ohne). Meldet das
+                  # Relay denselben Fall als 200er-Rumpf, gehoert ihm
+                  # dieselbe Reparatur - erst danach ist er dauerhaft.
+                  if getattr(e, "typ", "") == "invalid_request_error":
+                      _stufe = payload.get("reasoning_effort")
+                      if _stufe == "max":
+                          payload["reasoning_effort"] = "high"
+                          print("relay meldete invalid_request (HTTP 200) - "
+                                "weiter mit reasoning_effort=high",
+                                file=sys.stderr)
+                          continue
+                      if payload.pop("reasoning_effort", None) is not None:
+                          print("relay meldete invalid_request (HTTP 200) - "
+                                "weiter ohne reasoning_effort",
+                                file=sys.stderr)
+                          continue
+                  _DAUERHAFT = ("authentication_error", "invalid_api_key",
+                                "invalid_request_error", "permission_error",
+                                "not_found_error", "insufficient_quota")
+                  if getattr(e, "typ", "") in _DAUERHAFT:
+                      print(f"Model call failed: relay meldete {e!s} "
+                            f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
+                            f"Wiederholung", file=sys.stderr)
+                      sys.exit(1)
+                  if PAUSEN:
+                      p = PAUSEN.pop(0)
+                      print(f"relay meldete \"{e}\" (HTTP 200) - neuer versuch in {p}s",
+                            file=sys.stderr)
+                      time.sleep(p)
+                      continue
+                  print(f"Model call failed: relay meldete {e!s} bei HTTP 200",
+                        file=sys.stderr)
+                  sys.exit(1)
               except urllib.error.HTTPError as e:
                   # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
                   # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
