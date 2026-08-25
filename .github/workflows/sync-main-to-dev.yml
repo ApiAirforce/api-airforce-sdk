@@ -113,7 +113,27 @@ jobs:
             fi
             # Schlaegt der Merge fehl, ist das ein echter Fehler und der Lauf
             # soll rot werden - dieser Abgleich darf nicht still ausfallen.
+            # DAS ZIEL BINDEN, NICHT NUR DEN KOPF. Befund `hoch` der Durchsicht,
+            # 25.08.2026: `--match-head-commit` prueft den Kopf des PRs. Ein
+            # Schreibberechtigter kann den ueber `--base dev` gefundenen PR
+            # zwischen Abfrage und Merge auf `main` umhaengen - der Kopf bleibt
+            # derselbe, der Merge geht durch, und dieser Ablauf meldete
+            # `status=merged`, obwohl `dev` unveraendert ist.
+            BASIS=$(gh pr view "$NR" --json baseRefName --jq .baseRefName)
+            if [ "$BASIS" != "dev" ]; then
+              echo "::error::PR #$NR zielt auf '$BASIS', nicht auf dev. Kein Merge."
+              exit 1
+            fi
             gh pr merge "$NR" --merge --delete-branch --match-head-commit "$ZIEL_SHA"
+            # UND DANACH DAS ERGEBNIS MESSEN. Jede Vorab-Pruefung ist nur eine
+            # Momentaufnahme; zwischen ihr und dem Merge bleibt eine Luecke. Das
+            # hier vertraut dem Aufruf nicht, sondern sieht nach - und faengt
+            # damit auch Faelle, die niemand vorher aufgezaehlt hat.
+            git fetch origin dev
+            if ! git merge-base --is-ancestor "$ZIEL_SHA" origin/dev; then
+              echo "::error::Merge gemeldet, aber $ZIEL_SHA liegt nicht auf dev."
+              exit 1
+            fi
             echo "status=merged" >> "$GITHUB_OUTPUT"
           else
             git merge --abort || true
