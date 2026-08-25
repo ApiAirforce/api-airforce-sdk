@@ -183,11 +183,32 @@ jobs:
                             file=sys.stderr)
                       return {"choices": [{"message": {"content": t}}],
                               "usage": ganz.get("usage") or {}}
-                  for roh in resp:
-                      zeile = roh.decode("utf-8", "replace").strip()
-                      if not zeile.startswith("data:"):
-                          continue
-                      nutz = zeile[5:].strip()
+                  def _ereignisse(strom):
+                      """SSE-Ereignisse statt Zeilen.
+
+                      Ein Ereignis endet an der LEERZEILE, nicht am
+                      Zeilenumbruch, und darf mehrere `data:`-Zeilen
+                      tragen, die mit Zeilenumbruch zusammengehoeren.
+                      Wer je Zeile parst, zerlegt genau solche
+                      Ereignisse, zaehlt sie als kaputt und loest einen
+                      zweiten, ABGERECHNETEN Aufruf aus - fuer nichts.
+                      """
+                      teile = []
+                      for roh in strom:
+                          z = roh.decode("utf-8", "replace").rstrip("\r\n")
+                          if z:
+                              if z.startswith("data:"):
+                                  teile.append(z[5:].lstrip())
+                              continue
+                          if teile:
+                              yield chr(10).join(teile)
+                              teile = []
+                      # Ein letztes Ereignis ohne abschliessende Leerzeile
+                      # ist kein Fehler - der Strom endet einfach.
+                      if teile:
+                          yield chr(10).join(teile)
+
+                  for nutz in _ereignisse(resp):
                       if nutz == "[DONE]":
                           fertig = True
                           break
