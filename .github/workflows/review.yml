@@ -332,6 +332,17 @@ jobs:
               strom["stream_options"] = {"include_usage": True}
               try:
                   return _stroemen(strom)
+              except _RelayFehler as e:
+                  if getattr(e, "typ", "") != "invalid_request_error":
+                      raise
+                  # Ein invalid_request aus dem STROM-Aufruf kann auch die
+                  # stream-Felder selbst meinen - nicht nur reasoning_effort.
+                  # Die Leiter wuerde zweimal WIEDER mit Strom anrufen und
+                  # dann sterben. Der nicht-stroemende Pfad sendet die
+                  # stream-Felder gar nicht - also einmal dorthin. Kommt der
+                  # Fehler dort wieder, geht er regulaer auf die Leiter.
+                  print("relay meldete invalid_request im Strom-Aufruf "
+                        "(HTTP 200) - einmal ohne Strom", file=sys.stderr)
               except _StromUnbrauchbar as e:
                   # Einmal ohne Strom. Besser eine langsame Durchsicht als
                   # gar keine - und der GRUND gehoert ins Protokoll. Seit
