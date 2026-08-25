@@ -45,6 +45,11 @@ jobs:
 
       - name: main nach dev mergen
         id: merge
+        env:
+          # NEU (25.08.2026): der Schritt oeffnet jetzt selbst einen PR und
+          # braucht dafuer eine Anmeldung. Ohne diese Zeile bricht `gh` mit
+          # "To use GitHub CLI ... set the GH_TOKEN environment variable" ab.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
           git fetch origin main dev
@@ -56,7 +61,39 @@ jobs:
             exit 0
           fi
           if git merge --no-edit origin/main -m "chore: sync dev with main ($AHEAD commits)"; then
-            git push origin HEAD:dev
+            # KEIN DIREKT-PUSH AUF `dev` MEHR. `dev` nimmt seit dem 25.08.2026
+            # nur noch gemergte PRs an; ein Push von hier wuerde mit GH013
+            # abgewiesen und dieser Abgleich liefe stuendlich rot. Genau hier
+            # waere der Ausfall am teuersten - dies ist die einzige Stelle, die
+            # `dev` und `main` zusammenhaelt.
+            #
+            # Derselbe Inhalt, nur ueber einen PR, der sofort gemergt wird. Der
+            # PR ist kein Tor, sondern die Spur: man sieht hinterher, was der
+            # Abgleich mitgenommen hat. Beim Direkt-Push stand dort nur ein
+            # Commit von einem Bot.
+            #
+            # EIGENER ZWEIG, nicht der des Konflikt-PRs weiter unten: laege
+            # dort gerade eine Aufloesung von Hand, wuerde ein Force-Push sie
+            # unter der laufenden Arbeit wegziehen.
+            AUTO_ZWEIG=sync/auto-main-to-dev
+            git push -f origin "HEAD:refs/heads/$AUTO_ZWEIG"
+            NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open --json number --jq '.[0].number // ""')
+            if [ -z "$NR" ]; then
+              # Die Nummer NICHT aus der Ausgabe von `pr create` schneiden - wer
+              # aus der URL alle Ziffern zieht, klebt die aus dem Repo-Namen mit
+              # an. Anlegen, dann sauber nachfragen.
+              gh pr create --base dev --head "$AUTO_ZWEIG" \
+                --title "chore: dev mit main abgleichen ($AHEAD Commits)" \
+                --body "Automatischer Abgleich von main nach dev, $AHEAD Commit(s). Wird sofort gemergt - der PR ist die Spur, kein Tor."
+              NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open --json number --jq '.[0].number // ""')
+            fi
+            if [ -z "$NR" ]; then
+              echo "::error::PR fuer $AUTO_ZWEIG liess sich weder finden noch anlegen."
+              exit 1
+            fi
+            # Schlaegt der Merge fehl, ist das ein echter Fehler und der Lauf
+            # soll rot werden - dieser Abgleich darf nicht still ausfallen.
+            gh pr merge "$NR" --merge --delete-branch
             echo "status=merged" >> "$GITHUB_OUTPUT"
           else
             git merge --abort || true
