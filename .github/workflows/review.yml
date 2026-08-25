@@ -206,6 +206,13 @@ jobs:
                           ganz = json.loads(resp.read().decode("utf-8", "replace"))
                       except ValueError:
                           raise _StromUnbrauchbar("Antwort war weder SSE noch JSON")
+                      _f = _relay_fehler(ganz)
+                      if _f:
+                          # Ein Fehlerobjekt hier ist KEIN unbrauchbarer
+                          # Strom: als solcher behandelt loeste es einen
+                          # unnoetigen Zweitaufruf aus, statt direkt auf
+                          # die Leiter zu gehen.
+                          raise _RelayFehler(*_f)
                       w = (ganz.get("choices") or [{}])[0]
                       t = (((w.get("message") or {}).get("content") or "")
                            or ((w.get("delta") or {}).get("content") or ""))
@@ -384,6 +391,24 @@ jobs:
                   # frei formuliert, eine Wortsuche darin klassifiziert
                   # frueher oder spaeter falsch. Unbekannte Typen bleiben
                   # auf der Leiter; die endet nach drei Versuchen laut.
+                  # `invalid_request_error` NICHT sofort fatal: der
+                  # HTTP-400-Zweig darunter besitzt eine Reparatur
+                  # (reasoning_effort max -> high -> ohne). Meldet das
+                  # Relay denselben Fall als 200er-Rumpf, gehoert ihm
+                  # dieselbe Reparatur - erst danach ist er dauerhaft.
+                  if getattr(e, "typ", "") == "invalid_request_error":
+                      _stufe = payload.get("reasoning_effort")
+                      if _stufe == "max":
+                          payload["reasoning_effort"] = "high"
+                          print("relay meldete invalid_request (HTTP 200) - "
+                                "weiter mit reasoning_effort=high",
+                                file=sys.stderr)
+                          continue
+                      if payload.pop("reasoning_effort", None) is not None:
+                          print("relay meldete invalid_request (HTTP 200) - "
+                                "weiter ohne reasoning_effort",
+                                file=sys.stderr)
+                          continue
                   _DAUERHAFT = ("authentication_error", "invalid_api_key",
                                 "invalid_request_error", "permission_error",
                                 "not_found_error", "insufficient_quota")
