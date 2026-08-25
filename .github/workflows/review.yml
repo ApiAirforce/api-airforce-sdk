@@ -176,13 +176,29 @@ jobs:
                   # A reviewer that could not run must fail loudly, not pass as clean.
                   print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
                   sys.exit(1)
-              except urllib.error.URLError as e:
+              # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
+              # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
+              # Vererbung ist ConnectionResetError < ConnectionError < OSError -
+              # `urllib.error.URLError` steht darin NICHT und `TimeoutError` auch
+              # nicht. Der Abriss lief deshalb an dieser Leiter VORBEI, obwohl sie
+              # genau dafuer gebaut ist: Rueckverfolgungsbericht, Ende, roter Haken.
+              # Gemessen an acht gleichzeitig geoeffneten PRs - sieben Durchsichten
+              # starben so, keine einzige hat eine Wartezeit oder ein Ersatzmodell
+              # auch nur probiert.
+              #
+              # Das ist nicht bloss ein roter Haken: das Tor nach `test` verlangt je
+              # Commit eine Durchsicht. Ein Abriss haelt also die Auslieferung ALLER
+              # Fenster an, bis jemand von Hand neu startet.
+              #
+              # ConnectionError und nicht OSError - Letzteres saugt auch Datei- und
+              # Rechtefehler ein und wiederholt sie als waeren es Netzfehler.
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                   if PAUSEN:
                       p = PAUSEN.pop(0)
-                      print(f"netzfehler ({e.reason}) - neuer versuch in {p}s", file=sys.stderr)
+                      print(f"netzfehler ({getattr(e, 'reason', None) or type(e).__name__}) - neuer versuch in {p}s", file=sys.stderr)
                       time.sleep(p)
                       continue
-                  print(f"Model call failed: {e.reason}", file=sys.stderr)
+                  print(f"Model call failed: {getattr(e, 'reason', None) or type(e).__name__}", file=sys.stderr)
                   sys.exit(1)
 
           text = out["choices"][0]["message"]["content"] or ""
