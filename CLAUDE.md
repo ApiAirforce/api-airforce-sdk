@@ -16,7 +16,14 @@ language only is a bug — users compare them side by side.
 
 ## Branch model: `dev` → `test` → `main`
 
-- You push to **`dev`**. `test` and `main` are protected by rulesets — no force
+- **`dev` accepts merged pull requests only** (2026-08-25). The path is:
+  issue -> branch `<kind>/<nr>-<slug>` -> PR saying `Fixes #<nr>` -> bot review
+  on the PR -> merge. A direct push is rejected with `GH013`.
+- **The escape hatch stays open**: `dev` carries **no** required checks. You can
+  open a PR and merge it immediately - red, unreviewed, whatever. That costs the
+  same thirty seconds a push did and still leaves a trail. The strictness lives
+  at the gate into `test`, not on the way into `dev`.
+- `test` and `main` are protected by rulesets. `test` and `main` are protected by rulesets — no force
   push, no deletion, no state without green required checks, `bypass_actors = 0`.
   `main` accepts **merged pull requests only**.
 - `promote-to-test.yml` advances `test` once all eight required checks are green —
