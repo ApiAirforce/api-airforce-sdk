@@ -129,12 +129,21 @@ jobs:
           class _RelayFehler(Exception):
               """Das Relay meldete einen Fehler - mit HTTP 200 im Rumpf.
 
+              `typ` traegt den maschinenlesbaren Fehlertyp, denn nicht
+              jeder 200er-Fehler ist ein Ratenlimit: ein Auth- oder
+              Anfragefehler aendert sich durch Warten nicht, und drei
+              Wiederholungen kosten dann nur 85 s fuer dieselbe Antwort.
+
               Gemessen: `{"error":{"type":"rate_limit_error"}}` kam
               mit Status 200 zurueck. Die Wiederhol-Leiter kennt nur
               HTTPError und Netzfehler und sah darin keinen Fehler - der
               Aufruf fiel auf den nicht-stroemenden Weg, bekam dasselbe
               und lief ins Job-Zeitlimit. EIN 2XX BELEGT KEINE LIEFERUNG.
               """
+
+              def __init__(self, text, typ=""):
+                  super().__init__(text)
+                  self.typ = (typ or "").lower()
 
 
           def _relay_fehler(d):
@@ -145,8 +154,9 @@ jobs:
               if not f:
                   return None
               if isinstance(f, dict):
-                  return str(f.get("message") or f.get("type") or f)[:200]
-              return str(f)[:200]
+                  return (str(f.get("message") or f.get("type") or f)[:200],
+                          str(f.get("type") or ""))
+              return (str(f)[:200], "")
 
 
           class _StromUnbrauchbar(Exception):
@@ -253,7 +263,7 @@ jobs:
                           # Ein Fehlerobjekt im Strom ist kein leerer Strom.
                           # Als solcher behandelt fuehrte es zum Rueckfall,
                           # der denselben Fehler holt - und ins Zeitlimit.
-                          raise _RelayFehler(_f)
+                          raise _RelayFehler(*_f)
                       if brocken.get("usage"):
                           usage = brocken["usage"]
                       for w in brocken.get("choices") or []:
@@ -345,7 +355,7 @@ jobs:
               # dem Fehler, der wirklich vorliegt.
               _f = _relay_fehler(_ganz)
               if _f:
-                  raise _RelayFehler(_f)
+                  raise _RelayFehler(*_f)
               return _ganz
 
           payload = {"model": MODEL,
@@ -366,9 +376,22 @@ jobs:
               try:
                   out = call(payload)
               except _RelayFehler as e:
-                  # HTTP 200, Fehler im Rumpf - fluechtig wie ein 429, nur
-                  # ohne Statuscode. Dieselbe Leiter, damit ein Ratenlimit
-                  # nicht mehr als Zeitlimit endet.
+                  # HTTP 200, Fehler im Rumpf. Ein Ratenlimit ist fluechtig
+                  # und gehoert auf die Leiter - ein Auth- oder Anfrage-
+                  # fehler aendert sich durch Warten nicht: 85 s Pause fuer
+                  # dreimal dieselbe Antwort, dann erst der laute Tod.
+                  # Der TYP entscheidet, nicht der Text - Fehlertexte sind
+                  # frei formuliert, eine Wortsuche darin klassifiziert
+                  # frueher oder spaeter falsch. Unbekannte Typen bleiben
+                  # auf der Leiter; die endet nach drei Versuchen laut.
+                  _DAUERHAFT = ("authentication_error", "invalid_api_key",
+                                "invalid_request_error", "permission_error",
+                                "not_found_error", "insufficient_quota")
+                  if getattr(e, "typ", "") in _DAUERHAFT:
+                      print(f"Model call failed: relay meldete {e!s} "
+                            f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
+                            f"Wiederholung", file=sys.stderr)
+                      sys.exit(1)
                   if PAUSEN:
                       p = PAUSEN.pop(0)
                       print(f"relay meldete \"{e}\" (HTTP 200) - neuer versuch in {p}s",
