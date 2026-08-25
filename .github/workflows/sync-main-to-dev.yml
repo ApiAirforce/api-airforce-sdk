@@ -76,8 +76,25 @@ jobs:
             # dort gerade eine Aufloesung von Hand, wuerde ein Force-Push sie
             # unter der laufenden Arbeit wegziehen.
             AUTO_ZWEIG=sync/auto-main-to-dev
+            ZIEL_SHA=$(git rev-parse HEAD)
             git push -f origin "HEAD:refs/heads/$AUTO_ZWEIG"
-            NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open --json number --jq '.[0].number // ""')
+            # NUR EIN PR AUS DIESEM REPO UND MIT GENAU DIESEM COMMIT. Befund `hoch`
+            # der Durchsicht, 25.08.2026, in drei Repos gleichzeitig gemeldet:
+            # `gh pr list --head <name>` filtert nur den NAMEN des Head-Refs, nicht
+            # dessen Quell-Repository. Ein Fork kann einen offenen PR nach `dev` mit
+            # demselben Zweignamen anlegen - dann waere die Nummer schon gesetzt, der
+            # eigene PR wuerde uebersprungen, und der privilegierte Merge unten holte
+            # fremden Inhalt herein.
+            # Dazu: der feste Zweig ist force-pushbar. Zwischen unserem Push und dem
+            # Merge kann ihn jeder Schreibberechtigte verschieben.
+            # Deshalb beides - `isCrossRepository == false` und der Abgleich gegen
+            # unseren eigenen Kopf. `--match-head-commit` weiter unten ist der
+            # staerkere Riegel: der hier prueft eine Momentaufnahme, jener laesst
+            # GitHub im Moment des Merges selbst pruefen.
+            NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open \
+                   --json number,isCrossRepository,headRefOid \
+                   --jq ".[] | select(.isCrossRepository == false and .headRefOid == \"$ZIEL_SHA\") | .number" \
+                 | head -1)
             if [ -z "$NR" ]; then
               # Die Nummer NICHT aus der Ausgabe von `pr create` schneiden - wer
               # aus der URL alle Ziffern zieht, klebt die aus dem Repo-Namen mit
@@ -85,7 +102,10 @@ jobs:
               gh pr create --base dev --head "$AUTO_ZWEIG" \
                 --title "chore: dev mit main abgleichen ($AHEAD Commits)" \
                 --body "Automatischer Abgleich von main nach dev, $AHEAD Commit(s). Wird sofort gemergt - der PR ist die Spur, kein Tor."
-              NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open --json number --jq '.[0].number // ""')
+              NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open \
+                     --json number,isCrossRepository,headRefOid \
+                     --jq ".[] | select(.isCrossRepository == false and .headRefOid == \"$ZIEL_SHA\") | .number" \
+                   | head -1)
             fi
             if [ -z "$NR" ]; then
               echo "::error::PR fuer $AUTO_ZWEIG liess sich weder finden noch anlegen."
@@ -93,7 +113,7 @@ jobs:
             fi
             # Schlaegt der Merge fehl, ist das ein echter Fehler und der Lauf
             # soll rot werden - dieser Abgleich darf nicht still ausfallen.
-            gh pr merge "$NR" --merge --delete-branch
+            gh pr merge "$NR" --merge --delete-branch --match-head-commit "$ZIEL_SHA"
             echo "status=merged" >> "$GITHUB_OUTPUT"
           else
             git merge --abort || true
