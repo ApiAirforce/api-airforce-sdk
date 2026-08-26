@@ -195,7 +195,7 @@ jobs:
                            "Content-Type": "application/json",
                            "Accept": "text/event-stream"},
                   method="POST")
-              stuecke, usage, probe = [], {}, []
+              stuecke, usage, probe, grund = [], {}, [], ""
               # `fertig` haelt fest, ob der Strom ORDENTLICH endete.
               # `kaputt` zaehlt Ereignisse, die sich nicht lesen liessen.
               fertig, kaputt = False, 0
@@ -284,13 +284,31 @@ jobs:
                       if brocken.get("usage"):
                           usage = brocken["usage"]
                       for w in brocken.get("choices") or []:
+                          # DEN ABSCHLUSSGRUND MITSCHNEIDEN. Steht er auf
+                          # `content_filter` oder `length`, war die Antwort
+                          # abgeschlossen und damit BEZAHLT - dann sagt das
+                          # Protokoll unten, warum sie leer war, statt dass
+                          # wieder jemand raten muss.
+                          if w.get("finish_reason"):
+                              grund = w["finish_reason"]
                           # Nicht nur `delta.content`: ein Relay, das einen
                           # nicht-stroemenden Aufruf durchreicht, legt den Text
                           # nach `message.content`. Beide Formen mitnehmen,
                           # statt sich auf eine zu verlassen, die niemand
                           # gemessen hat.
                           for feld in ("delta", "message"):
-                              teil = (w.get(feld) or {}).get("content")
+                              # EIN REFUSAL TRAEGT SEINEN TEXT IN `refusal`,
+                              # NICHT IN `content`. Ohne dieses Feld sieht
+                              # eine abgeschlossene, bezahlte Ablehnung wie
+                              # ein leerer Strom aus - und loest den Rueckfall
+                              # aus, also einen ZWEITEN kostenpflichtigen
+                              # Aufruf desselben Prompts, der dieselbe
+                              # Ablehnung zurueckbringt. Den Text zu nehmen
+                              # ist besser als jeder Abbruch: die Durchsicht
+                              # bekommt eine Antwort statt eines Fehlers.
+                              _w = w.get(feld) or {}
+                              teil = (_w.get("content")
+                                      or _w.get("refusal"))
                               if teil:
                                   stuecke.append(teil)
                                   break
@@ -301,7 +319,9 @@ jobs:
                   # liefert aber keinen Text. Welche Form es stattdessen
                   # schickt, steht ab jetzt im Protokoll - das ist der
                   # einzige Weg, sie zu sehen statt sie zu raten.
-                  print("Strom ohne Inhalt. Erste Brocken: %r" % (probe,),
+                  print("Strom ohne Inhalt (grund=%r, usage=%s). "
+                        "Erste Brocken: %r"
+                        % (grund, bool(usage), probe),
                         file=sys.stderr)
                   raise _StromUnbrauchbar("Strom ohne Inhalt")
               if not fertig:
