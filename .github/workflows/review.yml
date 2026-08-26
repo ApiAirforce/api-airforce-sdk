@@ -414,6 +414,19 @@ jobs:
           def zeit_fuer_neuen_versuch(pause):
               """Passt Pause + ein ganzer Versuch noch vor die Kappe?"""
               return time.monotonic() + pause + AUFRUF_GRENZE < SCHLUSS
+
+          def wechsel_passt_noch(was):
+              """Ein Wechsel OHNE Pause kostet trotzdem einen ganzen Versuch.
+
+              Befund `mittel`: die Kompatibilitaets-Kaskade sprang mit
+              `continue` in einen neuen vollen Aufruf - ohne Pause, aber
+              auch ohne Fristpruefung. Nahe SCHLUSS laeuft der ueber die
+              Kappe, und der Job endet `cancelled` statt laut rot.
+              """
+              if zeit_fuer_neuen_versuch(0):
+                  return True
+              print(f"keine Restzeit mehr fuer {was} - Schluss", file=sys.stderr)
+              sys.exit(1)
           out = None
           while out is None:
               try:
@@ -435,11 +448,13 @@ jobs:
                   if getattr(e, "typ", "") == "invalid_request_error":
                       _stufe = payload.get("reasoning_effort")
                       if _stufe == "max":
+                          wechsel_passt_noch('high')
                           payload["reasoning_effort"] = "high"
                           print("relay meldete invalid_request (HTTP 200) - "
                                 "weiter mit reasoning_effort=high",
                                 file=sys.stderr)
                           continue
+                      wechsel_passt_noch('ohne reasoning_effort')
                       if payload.pop("reasoning_effort", None) is not None:
                           print("relay meldete invalid_request (HTTP 200) - "
                                 "weiter ohne reasoning_effort",
@@ -469,10 +484,12 @@ jobs:
                   if e.code == 400:
                       stufe = payload.get("reasoning_effort")
                       if stufe == "max":
+                          wechsel_passt_noch('high')
                           payload["reasoning_effort"] = "high"
                           print("relay kennt reasoning_effort=max nicht - weiter mit high",
                                 file=sys.stderr)
                           continue
+                      wechsel_passt_noch('ohne reasoning_effort')
                       if payload.pop("reasoning_effort", None) is not None:
                           print("relay kennt reasoning_effort nicht - weiter ohne das feld",
                                 file=sys.stderr)
