@@ -1,0 +1,119 @@
+# UEBERNOMMEN AUS api-airforce-backend (26.08.2026, backend#307).
+# Fuenf von sieben Repos hatten keinen Schritt von `test` nach `main` -
+# was das Tor nach `test` schob, blieb dort liegen, und niemandem fiel es
+# auf, weil nichts rot wurde: es lief schlicht nichts. Die Datei ist
+# repo-unabhaengig, sie braucht nur `git` und `gh`.
+# Aenderungen bitte in allen sieben nachziehen.
+name: promote-to-main
+
+# Opens a release PR from `test` to `main` when a candidate lands on `test`.
+#
+# Why a workflow and not a token on the agent box: the built-in GITHUB_TOKEN
+# lives only for the length of one run, is scoped to this repository by
+# construction, and never exists outside GitHub. The Hermes agent therefore
+# keeps exactly one capability — pushing with its deploy key — and gains no
+# long-lived credential that could be read off the box or outlive a rotation.
+#
+# WHERE IT SITS IN THE CHAIN (anes' decision 2026-08-23)
+#
+#     dev  ->  [promote-to-test]  ->  test  ->  [this]  ->  main
+#
+# `test` only ever receives what the gate let through: every required check
+# green, every commit reviewed, no open finding of severity `hoch`. This
+# workflow is the step AFTER the functional sign-off. It reads `test`, never
+# `dev` — a release that sourced `dev` would skip the middle stage and ship a
+# tree nobody looked at.
+#
+# WHY IT DOES NOT MERGE BY ITSELF
+#   A merge releases EVERYONE's pending work, not the commit that triggered it.
+#   Deciding that is a release decision, so this workflow prepares it — PR
+#   opened, full change list visible — and a human presses merge after the
+#   functional sign-off on `test`. Auto-merge is available for the day that
+#   sign-off becomes mechanical: set AUTO_MERGE below to "true".
+#
+# The old opt-in marker [promote-to-main] on a dev commit is GONE. The gate now
+# decides what reaches `test`; a marker on `dev` would route around it.
+
+on:
+  # A candidate arriving on `test` prepares the PR. It does NOT merge it — the
+  # functional sign-off happens on `test` first, and a human presses merge.
+  push:
+    branches: [test]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  AUTO_MERGE: "false"
+
+jobs:
+  open-release-pr:
+    # Auf den eigenen Runner umgezogen (19.08.2026), gleicher Grund wie in
+    # `promote-snapshot.yml` und `sync-main-to-dev.yml`: `ubuntu-latest`-Jobs
+    # bekommen in dieser Organisation keinen Runner mehr zugewiesen.
+    #
+    # Hier faellt der Ausfall besonders spaet auf. Der Ablauf meldet
+    # „skipped", solange kein Commit den Marker traegt — er sieht also gesund
+    # aus, und dass er nicht mehr STARTEN kann, merkt man erst an dem Tag, an
+    # dem man ein Release ausloest. Der Job braucht nur `git` und `gh`.
+    runs-on: [self-hosted, airforce-heavy]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: How far apart are test and main?
+        id: gap
+        run: |
+          git fetch origin main test
+          AHEAD=$(git rev-list --count origin/main..origin/test)
+          echo "ahead=$AHEAD" >> "$GITHUB_OUTPUT"
+          echo "test ist $AHEAD commit(s) vor main"
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "nichts zu promoten"; exit 0
+          fi
+          # The change list goes into the PR body: whoever merges must be able to
+          # see, without digging, that this releases other people's work too.
+          {
+            echo "## Was mit nach main ginge ($AHEAD commit(s))"
+            echo
+            git log --no-merges --format='- `%h` %s — %an' origin/main..origin/test | head -60
+            echo
+            echo "### Wer daran beteiligt ist"
+            git log --no-merges --format='%an' origin/main..origin/test | sort | uniq -c | sort -rn
+          } > /tmp/body.md
+
+      - name: Open or update the release PR
+        if: steps.gap.outputs.ahead != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          EXISTING=$(gh pr list --base main --head test --state open --json number \
+                     --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --body-file /tmp/body.md
+            echo "PR #$EXISTING aktualisiert"
+            echo "PR=$EXISTING" >> "$GITHUB_ENV"
+          else
+            URL=$(gh pr create --base main --head test \
+                  --title "release: test -> main (${{ steps.gap.outputs.ahead }} commits)" \
+                  --body-file /tmp/body.md)
+            echo "PR angelegt: $URL"
+            echo "PR=${URL##*/}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Merge (only when explicitly enabled)
+        if: steps.gap.outputs.ahead != '0' && env.AUTO_MERGE == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "$PR" --merge
+
+      - name: Say what still needs a human
+        if: steps.gap.outputs.ahead != '0' && env.AUTO_MERGE != 'true'
+        run: |
+          echo "::notice::PR #$PR ist offen. Der Stand hat das Tor zwischen dev und test passiert."
+          echo "::notice::Der Merge bleibt bewusst manuell: er wuerde ${{ steps.gap.outputs.ahead }} commit(s) mehrerer Agenten nach main bringen -- und das Tor prueft Pruefungen und Durchsicht, nicht die Funktion."
