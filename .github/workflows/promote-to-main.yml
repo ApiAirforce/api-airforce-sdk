@@ -122,8 +122,18 @@ jobs:
           # `isCrossRepository == false` wuerde der Bot dessen Rumpf
           # ueberschreiben und ihn als Release-PR behandeln. Dieselbe
           # Luecke wie am 25.08. in sync-main-to-dev.
-          EXISTING=$(gh pr list --base main --head test --state open \
-                     --json number,isCrossRepository \
+          # DER EIGENTUEMER GEHOERT IN DEN FILTER, NICHT ERST IN JQ
+          # (Befund `mittel`, 26.08.2026). `gh pr list` liefert ohne
+          # `--limit` hoechstens 30 Treffer, und der Fork-Ausschluss lief
+          # erst danach - dreissig neuere Fork-PRs mit Kopf `test` haetten
+          # den echten Release-PR aus der Menge gedraengt. `EXISTING`
+          # waere leer geblieben und `gh pr create` am bereits
+          # vorhandenen internen PR gescheitert.
+          # `owner:zweig` schraenkt serverseitig ein; `isCrossRepository`
+          # bleibt als zweiter Riegel stehen.
+          EXISTING=$(gh pr list --base main \
+                     --head "$GITHUB_REPOSITORY_OWNER:test" --state open \
+                     --limit 100 --json number,isCrossRepository \
                      --jq '[.[] | select(.isCrossRepository == false)][0].number // empty')
           TITEL="release: test -> main (${{ steps.gap.outputs.ahead }} commits)"
           if [ -n "$EXISTING" ]; then
