@@ -47,7 +47,17 @@ jobs:
   review:
     if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # 40 STATT 12 MINUTEN (26.08.2026). Gemessen ueber die letzten 40
+    # Laeufe je Repo: frontend 16 von 40 `cancelled` (40 %), status 9,
+    # modshield 4 - alle an dieser Kappe. `review-push.yml` steht aus
+    # genau dem Grund seit dem 23.08. auf 40: der langsamste
+    # ERFOLGREICHE Lauf brauchte 722 s bei einer Kappe von 720 s.
+    # Dieselbe Wiederhol-Leiter (5/20/60 s) steckt hier; drei Versuche
+    # passen rechnerisch nicht in zwoelf Minuten.
+    # Seit `dev` nur noch gemergte PRs annimmt, ist DIESE Datei der
+    # Hauptweg - und eine abgebrochene Durchsicht ist fuer das Tor
+    # dasselbe wie gar keine: sie haelt alle Fenster auf.
+    timeout-minutes: 40
     steps:
       - name: Review the diff
         env:
