@@ -131,10 +131,23 @@ jobs:
           # vorhandenen internen PR gescheitert.
           # `owner:zweig` schraenkt serverseitig ein; `isCrossRepository`
           # bleibt als zweiter Riegel stehen.
-          EXISTING=$(gh pr list --base main \
-                     --head "$GITHUB_REPOSITORY_OWNER:test" --state open \
-                     --limit 100 --json number,isCrossRepository \
-                     --jq '[.[] | select(.isCrossRepository == false)][0].number // empty')
+          # UEBER DIE API, NICHT UEBER `gh pr list` (nachgemessen
+          # 26.08.2026). `gh pr list --head` nimmt NUR den blossen
+          # Zweignamen - `--head owner:zweig` liefert dort LEER. Belegt an
+          # einem PR, von dem wir wussten, dass es ihn gibt:
+          #   gh pr list --head ci/45-pfadfilter             -> 46
+          #   gh pr list --head ApiAirforce:ci/45-pfadfilter -> (leer)
+          #   gh api ...pulls?head=ApiAirforce:ci/45-...     -> 46
+          # Ohne den Eigentuemer im Filter greift der Fork-Ausschluss aber
+          # erst nach der Seitengrenze - dreissig neuere Fork-PRs mit Kopf
+          # `test` haetten den echten Release-PR verdraengt.
+          # Die rohe API kann `head=owner:zweig` serverseitig. Der
+          # Vergleich auf das volle Repo bleibt als zweiter Riegel; jq
+          # liest die Umgebung ueber `env`, weil `gh api --jq` kein
+          # `--arg` kennt.
+          EXISTING=$(gh api \
+            "repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:test&per_page=100" \
+            --jq '[.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)][0].number // empty')
           TITEL="release: test -> main (${{ steps.gap.outputs.ahead }} commits)"
           if [ -n "$EXISTING" ]; then
             # Auch den TITEL mitziehen (Befund `niedrig`): sonst traegt er
