@@ -399,6 +399,34 @@ jobs:
           # Bleibt es dauerhaft rot, faellt der lauf weiterhin LAUT durch.
           FLUECHTIG = {429, 500, 502, 503, 504}
           PAUSEN = [5, 20, 60]
+          # WANN WIR AUFHOEREN, ES NOCHMAL ZU VERSUCHEN (26.08.2026).
+          # Beobachtet an app#27: das Relay meldet
+          #   relay meldete "Upstream HTTP/2 stream failed" (HTTP 200)
+          # und jeder Versuch haengt dabei rund FUENFZEHN Minuten. Drei
+          # davon passen nicht in die Kappe von 40 min - sie schneidet
+          # mitten im dritten ab, der Lauf endet `cancelled` statt rot,
+          # und es bleibt GAR NICHTS: dieselbe Leere, die dieser Ablauf
+          # verhindern soll. `review-push.yml` bremst so seit dem 23.08.;
+          # seit der PR-Pflicht ist DIESE Datei der Hauptweg.
+          AUFRUF_GRENZE = 900
+          SCHLUSS = time.monotonic() + 34 * 60
+
+          def zeit_fuer_neuen_versuch(pause):
+              """Passt Pause + ein ganzer Versuch noch vor die Kappe?"""
+              return time.monotonic() + pause + AUFRUF_GRENZE < SCHLUSS
+
+          def wechsel_passt_noch(was):
+              """Ein Wechsel OHNE Pause kostet trotzdem einen ganzen Versuch.
+
+              Befund `mittel`: die Kompatibilitaets-Kaskade sprang mit
+              `continue` in einen neuen vollen Aufruf - ohne Pause, aber
+              auch ohne Fristpruefung. Nahe SCHLUSS laeuft der ueber die
+              Kappe, und der Job endet `cancelled` statt laut rot.
+              """
+              if zeit_fuer_neuen_versuch(0):
+                  return True
+              print(f"keine Restzeit mehr fuer {was} - Schluss", file=sys.stderr)
+              sys.exit(1)
           out = None
           while out is None:
               try:
@@ -420,12 +448,14 @@ jobs:
                   if getattr(e, "typ", "") == "invalid_request_error":
                       _stufe = payload.get("reasoning_effort")
                       if _stufe == "max":
+                          wechsel_passt_noch('high')
                           payload["reasoning_effort"] = "high"
                           print("relay meldete invalid_request (HTTP 200) - "
                                 "weiter mit reasoning_effort=high",
                                 file=sys.stderr)
                           continue
                       if payload.pop("reasoning_effort", None) is not None:
+                          wechsel_passt_noch('ohne reasoning_effort')
                           print("relay meldete invalid_request (HTTP 200) - "
                                 "weiter ohne reasoning_effort",
                                 file=sys.stderr)
@@ -438,7 +468,7 @@ jobs:
                             f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
                             f"Wiederholung", file=sys.stderr)
                       sys.exit(1)
-                  if PAUSEN:
+                  if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
                       p = PAUSEN.pop(0)
                       print(f"relay meldete \"{e}\" (HTTP 200) - neuer versuch in {p}s",
                             file=sys.stderr)
@@ -454,15 +484,17 @@ jobs:
                   if e.code == 400:
                       stufe = payload.get("reasoning_effort")
                       if stufe == "max":
+                          wechsel_passt_noch('high')
                           payload["reasoning_effort"] = "high"
                           print("relay kennt reasoning_effort=max nicht - weiter mit high",
                                 file=sys.stderr)
                           continue
                       if payload.pop("reasoning_effort", None) is not None:
+                          wechsel_passt_noch('ohne reasoning_effort')
                           print("relay kennt reasoning_effort nicht - weiter ohne das feld",
                                 file=sys.stderr)
                           continue
-                  if e.code in FLUECHTIG and PAUSEN:
+                  if e.code in FLUECHTIG and PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
                       p = PAUSEN.pop(0)
                       print(f"relay antwortete HTTP {e.code} - neuer versuch in {p}s",
                             file=sys.stderr)
@@ -488,7 +520,7 @@ jobs:
               # ConnectionError und nicht OSError - Letzteres saugt auch Datei- und
               # Rechtefehler ein und wiederholt sie als waeren es Netzfehler.
               except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                  if PAUSEN:
+                  if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
                       p = PAUSEN.pop(0)
                       print(f"netzfehler ({getattr(e, 'reason', None) or type(e).__name__}) - neuer versuch in {p}s", file=sys.stderr)
                       time.sleep(p)
