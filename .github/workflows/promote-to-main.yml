@@ -48,6 +48,15 @@ permissions:
 env:
   AUTO_MERGE: "false"
 
+# SUCHEN UND ANLEGEN SIND NICHT ATOMAR (Befund `mittel`, 26.08.2026).
+# Ohne diese Gruppe koennen zwei rasche Pushes beide keinen PR finden -
+# einer scheitert dann am inzwischen angelegten, oder ein aelterer Lauf
+# schreibt zuletzt einen veralteten Rumpf. NICHT `cancel-in-progress`:
+# der spaetere Stand soll gewinnen, aber nacheinander, nicht verschraenkt.
+concurrency:
+  group: promote-to-main-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   open-release-pr:
     # Auf den eigenen Runner umgezogen (19.08.2026), gleicher Grund wie in
@@ -77,13 +86,29 @@ jobs:
           fi
           # The change list goes into the PR body: whoever merges must be able to
           # see, without digging, that this releases other people's work too.
+          # KEIN STILLER DECKEL (Befund `mittel`). Der Rumpf ist die
+          # Entscheidungsgrundlage fuer den Merge - eine Liste, die
+          # verschweigt, dass sie unvollstaendig ist, laedt dazu ein,
+          # etwas auszuliefern, das niemand gesehen hat. Deshalb 200
+          # statt 60, und was dann noch fehlt, wird BENANNT.
+          git log --no-merges --format='- `%h` %s — %an' \
+              origin/main..origin/test > /tmp/alle.txt
+          GESAMT=$(wc -l < /tmp/alle.txt)
           {
             echo "## Was mit nach main ginge ($AHEAD commit(s))"
             echo
-            git log --no-merges --format='- `%h` %s — %an' origin/main..origin/test | head -60
+            head -200 /tmp/alle.txt
+            if [ "$GESAMT" -gt 200 ]; then
+              echo
+              echo "> **Und $(( GESAMT - 200 )) weitere Commits, hier nicht aufgefuehrt.**"
+              echo "> Vollstaendig unter *Files changed* bzw. mit"
+              echo "> \`git log --no-merges origin/main..origin/test\`."
+            fi
             echo
             echo "### Wer daran beteiligt ist"
-            git log --no-merges --format='%an' origin/main..origin/test | sort | uniq -c | sort -rn
+            git log --no-merges --format='%an' origin/main..origin/test \
+                > /tmp/autoren.txt
+            sort /tmp/autoren.txt | uniq -c | sort -rn
           } > /tmp/body.md
 
       - name: Open or update the release PR
@@ -92,15 +117,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          EXISTING=$(gh pr list --base main --head test --state open --json number \
-                     --jq '.[0].number // empty')
+          # `--head test` FILTERT NUR DEN ZWEIGNAMEN (Befund `hoch`).
+          # Ein Fork kann einen PR mit Kopf `test` offen haben; ohne
+          # `isCrossRepository == false` wuerde der Bot dessen Rumpf
+          # ueberschreiben und ihn als Release-PR behandeln. Dieselbe
+          # Luecke wie am 25.08. in sync-main-to-dev.
+          EXISTING=$(gh pr list --base main --head test --state open \
+                     --json number,isCrossRepository \
+                     --jq '[.[] | select(.isCrossRepository == false)][0].number // empty')
+          TITEL="release: test -> main (${{ steps.gap.outputs.ahead }} commits)"
           if [ -n "$EXISTING" ]; then
-            gh pr edit "$EXISTING" --body-file /tmp/body.md
+            # Auch den TITEL mitziehen (Befund `niedrig`): sonst traegt er
+            # ewig die Zahl vom Anlegen und wirbt mit einer falschen
+            # Release-Groesse.
+            gh pr edit "$EXISTING" --title "$TITEL" --body-file /tmp/body.md
             echo "PR #$EXISTING aktualisiert"
             echo "PR=$EXISTING" >> "$GITHUB_ENV"
           else
             URL=$(gh pr create --base main --head test \
-                  --title "release: test -> main (${{ steps.gap.outputs.ahead }} commits)" \
+                  --title "$TITEL" \
                   --body-file /tmp/body.md)
             echo "PR angelegt: $URL"
             echo "PR=${URL##*/}" >> "$GITHUB_ENV"
