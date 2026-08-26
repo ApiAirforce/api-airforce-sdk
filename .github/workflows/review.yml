@@ -454,8 +454,8 @@ jobs:
                                 "weiter mit reasoning_effort=high",
                                 file=sys.stderr)
                           continue
-                      wechsel_passt_noch('ohne reasoning_effort')
                       if payload.pop("reasoning_effort", None) is not None:
+                          wechsel_passt_noch('ohne reasoning_effort')
                           print("relay meldete invalid_request (HTTP 200) - "
                                 "weiter ohne reasoning_effort",
                                 file=sys.stderr)
@@ -489,8 +489,8 @@ jobs:
                           print("relay kennt reasoning_effort=max nicht - weiter mit high",
                                 file=sys.stderr)
                           continue
-                      wechsel_passt_noch('ohne reasoning_effort')
                       if payload.pop("reasoning_effort", None) is not None:
+                          wechsel_passt_noch('ohne reasoning_effort')
                           print("relay kennt reasoning_effort nicht - weiter ohne das feld",
                                 file=sys.stderr)
                           continue
