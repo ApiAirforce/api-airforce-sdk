@@ -83,6 +83,19 @@ permissions:
   # nutzt das hier niemand; die Zeile kostet nichts und verhindert, dass
   # dieselbe stille Luecke ueber den anderen Weg zurueckkommt.
   statuses: read
+  # SAME HOLE AS `checks: read` ABOVE, one scope over. The gate calls three
+  # pull-request endpoints - `/commits/<sha>/pulls` twice (skipping merge
+  # commits, and finding the PR a commit belongs to) and
+  # `/pulls/<nr>/reviews` (the automated review). Without this line all
+  # three answer 403, `gh_json` returns None, and `or []` makes that
+  # indistinguishable from "belongs to no pull request".
+  #
+  # The damage is silent, not loud: no merge commit is ever skipped, and no
+  # pull-request review ever counts - which switches off "the review counts
+  # wherever it is" without a single red run. Measured 27.08.2026 in all
+  # seven repositories; the block listed contents/issues/actions/checks/
+  # statuses and never `pull-requests`.
+  pull-requests: read
 
 # Ein wartender Lauf genuegt. Der neueste dev-Stand ist der, der nach `test`
 # soll - ein aelterer Waerter waere nur noch Ballast auf dem Runner.
