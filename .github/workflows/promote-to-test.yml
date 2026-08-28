@@ -400,8 +400,23 @@ jobs:
                   # Fehlt die Marke, wird NICHT durchgewunken.
                   anzahl = int(m.group(1)) if m else len(re.findall(r"\|\s*hoch\s*\|", koerper))
                   if anzahl:
+                      # WHO MAY ANSWER (review finding `hoch`, 28.08.2026).
+                      # `#erledigt` / `#fehlalarm` closes a finding and opens
+                      # the gate - and this regex ran over EVERY comment
+                      # without ever looking at who wrote it. Anyone able to
+                      # comment on the pull request could clear a finding; in
+                      # the public `api-airforce-sdk` that is anybody at all.
+                      #
+                      # The comment above claimed this was safe because those
+                      # answers `should come from humans`. A human is not the
+                      # same as an authorised human - that was the gap.
+                      #
+                      # `author_association` is carried by both endpoints we
+                      # read here, commit comments and PR issue comments.
+                      DARF_ANTWORTEN = ("OWNER", "MEMBER", "COLLABORATOR")
                       beantwortet = any(
-                          (c.get("created_at") or "") > (juengste.get("created_at") or "")
+                          c.get("author_association") in DARF_ANTWORTEN
+                          and (c.get("created_at") or "") > (juengste.get("created_at") or "")
                           and re.search(r"#erledigt|#fehlalarm", c.get("body") or "", re.I)
                           for c in komm)
                       if not beantwortet:
