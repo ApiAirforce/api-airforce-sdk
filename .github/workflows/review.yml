@@ -47,7 +47,17 @@ jobs:
   review:
     if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # 40 STATT 12 MINUTEN (26.08.2026). Gemessen ueber die letzten 40
+    # Laeufe je Repo: frontend 16 von 40 `cancelled` (40 %), status 9,
+    # modshield 4 - alle an dieser Kappe. `review-push.yml` steht aus
+    # genau dem Grund seit dem 23.08. auf 40: der langsamste
+    # ERFOLGREICHE Lauf brauchte 722 s bei einer Kappe von 720 s.
+    # Dieselbe Wiederhol-Leiter (5/20/60 s) steckt hier; drei Versuche
+    # passen rechnerisch nicht in zwoelf Minuten.
+    # Seit `dev` nur noch gemergte PRs annimmt, ist DIESE Datei der
+    # Hauptweg - und eine abgebrochene Durchsicht ist fuer das Tor
+    # dasselbe wie gar keine: sie haelt alle Fenster auf.
+    timeout-minutes: 40
     steps:
       - name: Review the diff
         env:
@@ -126,14 +136,275 @@ jobs:
                   + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
                   + diff)
 
+          class _RelayFehler(Exception):
+              """Das Relay meldete einen Fehler - mit HTTP 200 im Rumpf.
+
+              `typ` traegt den maschinenlesbaren Fehlertyp, denn nicht
+              jeder 200er-Fehler ist ein Ratenlimit: ein Auth- oder
+              Anfragefehler aendert sich durch Warten nicht, und drei
+              Wiederholungen kosten dann nur 85 s fuer dieselbe Antwort.
+
+              Gemessen: `{"error":{"type":"rate_limit_error"}}` kam
+              mit Status 200 zurueck. Die Wiederhol-Leiter kennt nur
+              HTTPError und Netzfehler und sah darin keinen Fehler - der
+              Aufruf fiel auf den nicht-stroemenden Weg, bekam dasselbe
+              und lief ins Job-Zeitlimit. EIN 2XX BELEGT KEINE LIEFERUNG.
+              """
+
+              def __init__(self, text, typ=""):
+                  super().__init__(text)
+                  self.typ = (typ or "").lower()
+
+
+          def _relay_fehler(d):
+              """Traegt die Antwort ein Fehlerobjekt? Dann den Text davon."""
+              if not isinstance(d, dict):
+                  return None
+              f = d.get("error")
+              if not f:
+                  return None
+              if isinstance(f, dict):
+                  return (str(f.get("message") or f.get("type") or f)[:200],
+                          str(f.get("type") or ""))
+              return (str(f)[:200], "")
+
+
+          class _StromUnbrauchbar(Exception):
+              """Der Strom ist nicht als Durchsicht verwendbar.
+
+              Eigene Klasse, damit die Wiederhol-Leiter sie NICHT als
+              Netzfehler behandelt: dreimal dieselbe leere Antwort zu
+              holen kostet nur Zeit - genau das ist im ersten Anlauf
+              passiert (5 s, 20 s, 60 s Pause, dreimal leer). Der
+              Aufrufer faellt stattdessen einmal auf den
+              nicht-stroemenden Weg zurueck.
+              """
+
+
+          def _stroemen(payload):
+              """Den Strom lesen und daraus dieselbe Form bauen wie sonst.
+
+              Der Rest des Skripts liest `out["choices"][0]["message"]["content"]`
+              und `out["usage"]` - beides wird hier zusammengesetzt, damit
+              stromab nichts angefasst werden muss.
+              """
+              req = urllib.request.Request(
+                  BASE + "/chat/completions",
+                  data=json.dumps(payload).encode(),
+                  headers={"Authorization": f"Bearer {KEY}",
+                           "Content-Type": "application/json",
+                           "Accept": "text/event-stream"},
+                  method="POST")
+              stuecke, usage, probe, grund = [], {}, [], ""
+              # `fertig` haelt fest, ob der Strom ORDENTLICH endete.
+              # `kaputt` zaehlt Ereignisse, die sich nicht lesen liessen.
+              fertig, kaputt = False, 0
+              # 180 s gilt hier je LESEVORGANG, nicht fuer den ganzen Aufruf:
+              # solange Bytes kommen, laeuft er weiter. Eine Antwort darf also
+              # zehn Minuten dauern - sie darf nur nicht drei Minuten schweigen.
+              with urllib.request.urlopen(req, timeout=180) as resp:
+                  # WER `stream: true` IGNORIERT, SCHICKT NORMALES JSON.
+                  # Dann beginnt keine Zeile mit `data:` - unten wuerde
+                  # ALLES verworfen, `probe` bliebe leer, und derselbe
+                  # Prompt ginge ein ZWEITES Mal raus. Die erste Antwort
+                  # ist zu dem Zeitpunkt schon erzeugt UND ABGERECHNET.
+                  # Also am Inhaltstyp erkennen und direkt uebernehmen -
+                  # das ist zugleich der `message.content`-Weg, den der
+                  # Kommentar weiter unten vorsieht.
+                  if "event-stream" not in (resp.headers.get_content_type() or ""):
+                      try:
+                          ganz = json.loads(resp.read().decode("utf-8", "replace"))
+                      except ValueError:
+                          raise _StromUnbrauchbar("Antwort war weder SSE noch JSON")
+                      _f = _relay_fehler(ganz)
+                      if _f:
+                          # Ein Fehlerobjekt hier ist KEIN unbrauchbarer
+                          # Strom: als solcher behandelt loeste es einen
+                          # unnoetigen Zweitaufruf aus, statt direkt auf
+                          # die Leiter zu gehen.
+                          raise _RelayFehler(*_f)
+                      w = (ganz.get("choices") or [{}])[0]
+                      t = (((w.get("message") or {}).get("content") or "")
+                           or ((w.get("delta") or {}).get("content") or ""))
+                      if not t.strip():
+                          raise _StromUnbrauchbar(
+                              "Antwort ohne Strom und ohne Inhalt")
+                      print("relay stroemt nicht - Antwort direkt uebernommen",
+                            file=sys.stderr)
+                      return {"choices": [{"message": {"content": t}}],
+                              "usage": ganz.get("usage") or {}}
+                  def _ereignisse(strom):
+                      """SSE-Ereignisse statt Zeilen.
+
+                      Ein Ereignis endet an der LEERZEILE, nicht am
+                      Zeilenumbruch, und darf mehrere `data:`-Zeilen
+                      tragen, die mit Zeilenumbruch zusammengehoeren.
+                      Wer je Zeile parst, zerlegt genau solche
+                      Ereignisse, zaehlt sie als kaputt und loest einen
+                      zweiten, ABGERECHNETEN Aufruf aus - fuer nichts.
+                      """
+                      teile = []
+                      for roh in strom:
+                          z = roh.decode("utf-8", "replace").rstrip("\r\n")
+                          if z:
+                              if z.startswith("data:"):
+                                  teile.append(z[5:].lstrip())
+                              continue
+                          if teile:
+                              yield chr(10).join(teile)
+                              teile = []
+                      # Ein letztes Ereignis ohne abschliessende Leerzeile
+                      # ist kein Fehler - der Strom endet einfach.
+                      if teile:
+                          yield chr(10).join(teile)
+
+                  for nutz in _ereignisse(resp):
+                      if nutz == "[DONE]":
+                          fertig = True
+                          break
+                      try:
+                          brocken = json.loads(nutz)
+                      except ValueError:
+                          # HIER KOMMT KEIN REST NACH. `for roh in resp`
+                          # liefert VOLLSTAENDIGE Zeilen - ein halbes JSON
+                          # kann gar nicht ankommen, und der naechste
+                          # Brocken bringt nichts nach. Was hier scheitert,
+                          # ist endgueltig weg. Zaehlen statt verschweigen:
+                          # unten entscheidet es ueber den Rueckfall.
+                          kaputt += 1
+                          continue
+                      if len(probe) < 3:
+                          probe.append(nutz[:300])
+                      _f = _relay_fehler(brocken)
+                      if _f:
+                          # Ein Fehlerobjekt im Strom ist kein leerer Strom.
+                          # Als solcher behandelt fuehrte es zum Rueckfall,
+                          # der denselben Fehler holt - und ins Zeitlimit.
+                          raise _RelayFehler(*_f)
+                      if brocken.get("usage"):
+                          usage = brocken["usage"]
+                      for w in brocken.get("choices") or []:
+                          # DEN ABSCHLUSSGRUND MITSCHNEIDEN. Steht er auf
+                          # `content_filter` oder `length`, war die Antwort
+                          # abgeschlossen und damit BEZAHLT - dann sagt das
+                          # Protokoll unten, warum sie leer war, statt dass
+                          # wieder jemand raten muss.
+                          if w.get("finish_reason"):
+                              grund = w["finish_reason"]
+                          # Nicht nur `delta.content`: ein Relay, das einen
+                          # nicht-stroemenden Aufruf durchreicht, legt den Text
+                          # nach `message.content`. Beide Formen mitnehmen,
+                          # statt sich auf eine zu verlassen, die niemand
+                          # gemessen hat.
+                          for feld in ("delta", "message"):
+                              # EIN REFUSAL TRAEGT SEINEN TEXT IN `refusal`,
+                              # NICHT IN `content`. Ohne dieses Feld sieht
+                              # eine abgeschlossene, bezahlte Ablehnung wie
+                              # ein leerer Strom aus - und loest den Rueckfall
+                              # aus, also einen ZWEITEN kostenpflichtigen
+                              # Aufruf desselben Prompts, der dieselbe
+                              # Ablehnung zurueckbringt. Den Text zu nehmen
+                              # ist besser als jeder Abbruch: die Durchsicht
+                              # bekommt eine Antwort statt eines Fehlers.
+                              _w = w.get(feld) or {}
+                              teil = (_w.get("content")
+                                      or _w.get("refusal"))
+                              if teil:
+                                  stuecke.append(teil)
+                                  break
+              text = "".join(stuecke)
+              if not text.strip():
+                  # KEIN STILLES DURCHWINKEN, ABER AUCH KEIN TOTALAUSFALL.
+                  # Gemessen am 25.08.: das Relay nimmt `stream: true` an,
+                  # liefert aber keinen Text. Welche Form es stattdessen
+                  # schickt, steht ab jetzt im Protokoll - das ist der
+                  # einzige Weg, sie zu sehen statt sie zu raten.
+                  print("Strom ohne Inhalt (grund=%r, usage=%s). "
+                        "Erste Brocken: %r"
+                        % (grund, bool(usage), probe),
+                        file=sys.stderr)
+                  raise _StromUnbrauchbar("Strom ohne Inhalt")
+              if not fertig:
+                  # EOF IST KEIN ABSCHLUSS. Ohne `[DONE]` steht hier zwar
+                  # Text, aber nur der Anfang - bricht eine Schicht den
+                  # Strom nach ein paar Deltas ab, sieht das Ergebnis wie
+                  # "wenig gefunden" aus. Genau die Verwechslung, gegen die
+                  # dieser Reviewer gebaut ist. Lieber langsam und ganz.
+                  raise _StromUnbrauchbar(
+                      "Strom endete ohne [DONE] nach %d Zeichen" % len(text))
+              if kaputt:
+                  # Ein unlesbares Ereignis kann Text getragen haben, der
+                  # jetzt fehlt. Eine Durchsicht mit Loechern ist schlimmer
+                  # als eine langsame.
+                  raise _StromUnbrauchbar("%d unlesbare Ereignisse im Strom" % kaputt)
+              return {"choices": [{"message": {"content": text}}], "usage": usage}
+
           def call(payload):
               req = urllib.request.Request(
                   BASE + "/chat/completions",
                   data=json.dumps(payload).encode(),
                   headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
                   method="POST")
-              with urllib.request.urlopen(req, timeout=600) as resp:
-                  return json.load(resp)
+              # STROEMEN, NICHT SCHWEIGEN (25.08.2026). Gemessen: unser Backend
+              # antwortet in 23-31 s (max 80 s) und protokollierte an einem Tag
+              # EINEN Fehler; nginx meldete EINEN 502. Die Reviewer-Jobs brauchten
+              # trotzdem 283 s im Schnitt, bis zu 1812 s, und 18 von 195 starben an
+              # `RemoteDisconnected` oder `TimeoutError` nach 600 s. Die
+              # gescheiterten Anfragen haben unser Backend also nie erreicht - eine
+              # Verbindung, ueber die minutenlang kein Byte geht, raeumt die Schicht
+              # davor ab, und der Client merkt es erst beim Lesen.
+              #
+              # Im Strom fliessen Bytes ab dem ersten Denkschritt. Der Deckel liegt
+              # damit auf dem ERSTEN BYTE statt auf der Gesamtdauer - eine
+              # Gesamtgrenze begrenzt kein Schweigen.
+              strom = dict(payload)
+              strom["stream"] = True
+              strom["stream_options"] = {"include_usage": True}
+              try:
+                  return _stroemen(strom)
+              except _RelayFehler as e:
+                  if getattr(e, "typ", "") != "invalid_request_error":
+                      raise
+                  # Ein invalid_request aus dem STROM-Aufruf kann auch die
+                  # stream-Felder selbst meinen - nicht nur reasoning_effort.
+                  # Die Leiter wuerde zweimal WIEDER mit Strom anrufen und
+                  # dann sterben. Der nicht-stroemende Pfad sendet die
+                  # stream-Felder gar nicht - also einmal dorthin. Kommt der
+                  # Fehler dort wieder, geht er regulaer auf die Leiter.
+                  print("relay meldete invalid_request im Strom-Aufruf "
+                        "(HTTP 200) - einmal ohne Strom", file=sys.stderr)
+              except _StromUnbrauchbar as e:
+                  # Einmal ohne Strom. Besser eine langsame Durchsicht als
+                  # gar keine - und der GRUND gehoert ins Protokoll. Seit
+                  # die Ausnahme auch "EOF ohne [DONE]" und unlesbare
+                  # Ereignisse abdeckt, waere "leer" bei zwei von drei
+                  # Faellen gelogen und die Diagnose unsichtbar.
+                  print("Strom unbrauchbar (%s) - einmal ohne" % e,
+                        file=sys.stderr)
+              except urllib.error.HTTPError as e:
+                  # Kennt das Relay `stream` nicht, ist das KEIN fluechtiger
+                  # Fehler - einmal ohne das Feld, dann weiter wie frueher. Ein
+                  # Reviewer, der an einer Verbesserung stirbt, ist schlechter
+                  # als der langsame davor.
+                  if e.code != 400:
+                      raise
+                  print("relay kennt stream nicht - einmal ohne", file=sys.stderr)
+              req = urllib.request.Request(
+                  BASE + "/chat/completions",
+                  data=json.dumps(payload).encode(),
+                  headers={"Authorization": f"Bearer {KEY}",
+                           "Content-Type": "application/json"},
+                  method="POST")
+              with urllib.request.urlopen(req, timeout=300) as resp:
+                  _ganz = json.load(resp)
+              # AUCH HIER: Status 200, Fehler im Rumpf. Ohne diese Pruefung
+              # gaebe `out` ein Objekt ohne `choices` zurueck und der
+              # Reviewer stuerbe weiter unten an einem KeyError statt an
+              # dem Fehler, der wirklich vorliegt.
+              _f = _relay_fehler(_ganz)
+              if _f:
+                  raise _RelayFehler(*_f)
+              return _ganz
 
           payload = {"model": MODEL,
                      "messages": [{"role": "system", "content": system},
@@ -148,10 +419,84 @@ jobs:
           # Bleibt es dauerhaft rot, faellt der lauf weiterhin LAUT durch.
           FLUECHTIG = {429, 500, 502, 503, 504}
           PAUSEN = [5, 20, 60]
+          # WANN WIR AUFHOEREN, ES NOCHMAL ZU VERSUCHEN (26.08.2026).
+          # Beobachtet an app#27: das Relay meldet
+          #   relay meldete "Upstream HTTP/2 stream failed" (HTTP 200)
+          # und jeder Versuch haengt dabei rund FUENFZEHN Minuten. Drei
+          # davon passen nicht in die Kappe von 40 min - sie schneidet
+          # mitten im dritten ab, der Lauf endet `cancelled` statt rot,
+          # und es bleibt GAR NICHTS: dieselbe Leere, die dieser Ablauf
+          # verhindern soll. `review-push.yml` bremst so seit dem 23.08.;
+          # seit der PR-Pflicht ist DIESE Datei der Hauptweg.
+          AUFRUF_GRENZE = 900
+          SCHLUSS = time.monotonic() + 34 * 60
+
+          def zeit_fuer_neuen_versuch(pause):
+              """Passt Pause + ein ganzer Versuch noch vor die Kappe?"""
+              return time.monotonic() + pause + AUFRUF_GRENZE < SCHLUSS
+
+          def wechsel_passt_noch(was):
+              """Ein Wechsel OHNE Pause kostet trotzdem einen ganzen Versuch.
+
+              Befund `mittel`: die Kompatibilitaets-Kaskade sprang mit
+              `continue` in einen neuen vollen Aufruf - ohne Pause, aber
+              auch ohne Fristpruefung. Nahe SCHLUSS laeuft der ueber die
+              Kappe, und der Job endet `cancelled` statt laut rot.
+              """
+              if zeit_fuer_neuen_versuch(0):
+                  return True
+              print(f"keine Restzeit mehr fuer {was} - Schluss", file=sys.stderr)
+              sys.exit(1)
           out = None
           while out is None:
               try:
                   out = call(payload)
+              except _RelayFehler as e:
+                  # HTTP 200, Fehler im Rumpf. Ein Ratenlimit ist fluechtig
+                  # und gehoert auf die Leiter - ein Auth- oder Anfrage-
+                  # fehler aendert sich durch Warten nicht: 85 s Pause fuer
+                  # dreimal dieselbe Antwort, dann erst der laute Tod.
+                  # Der TYP entscheidet, nicht der Text - Fehlertexte sind
+                  # frei formuliert, eine Wortsuche darin klassifiziert
+                  # frueher oder spaeter falsch. Unbekannte Typen bleiben
+                  # auf der Leiter; die endet nach drei Versuchen laut.
+                  # `invalid_request_error` NICHT sofort fatal: der
+                  # HTTP-400-Zweig darunter besitzt eine Reparatur
+                  # (reasoning_effort max -> high -> ohne). Meldet das
+                  # Relay denselben Fall als 200er-Rumpf, gehoert ihm
+                  # dieselbe Reparatur - erst danach ist er dauerhaft.
+                  if getattr(e, "typ", "") == "invalid_request_error":
+                      _stufe = payload.get("reasoning_effort")
+                      if _stufe == "max":
+                          wechsel_passt_noch('high')
+                          payload["reasoning_effort"] = "high"
+                          print("relay meldete invalid_request (HTTP 200) - "
+                                "weiter mit reasoning_effort=high",
+                                file=sys.stderr)
+                          continue
+                      if payload.pop("reasoning_effort", None) is not None:
+                          wechsel_passt_noch('ohne reasoning_effort')
+                          print("relay meldete invalid_request (HTTP 200) - "
+                                "weiter ohne reasoning_effort",
+                                file=sys.stderr)
+                          continue
+                  _DAUERHAFT = ("authentication_error", "invalid_api_key",
+                                "invalid_request_error", "permission_error",
+                                "not_found_error", "insufficient_quota")
+                  if getattr(e, "typ", "") in _DAUERHAFT:
+                      print(f"Model call failed: relay meldete {e!s} "
+                            f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
+                            f"Wiederholung", file=sys.stderr)
+                      sys.exit(1)
+                  if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
+                      p = PAUSEN.pop(0)
+                      print(f"relay meldete \"{e}\" (HTTP 200) - neuer versuch in {p}s",
+                            file=sys.stderr)
+                      time.sleep(p)
+                      continue
+                  print(f"Model call failed: relay meldete {e!s} bei HTTP 200",
+                        file=sys.stderr)
+                  sys.exit(1)
               except urllib.error.HTTPError as e:
                   # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
                   # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
@@ -159,15 +504,17 @@ jobs:
                   if e.code == 400:
                       stufe = payload.get("reasoning_effort")
                       if stufe == "max":
+                          wechsel_passt_noch('high')
                           payload["reasoning_effort"] = "high"
                           print("relay kennt reasoning_effort=max nicht - weiter mit high",
                                 file=sys.stderr)
                           continue
                       if payload.pop("reasoning_effort", None) is not None:
+                          wechsel_passt_noch('ohne reasoning_effort')
                           print("relay kennt reasoning_effort nicht - weiter ohne das feld",
                                 file=sys.stderr)
                           continue
-                  if e.code in FLUECHTIG and PAUSEN:
+                  if e.code in FLUECHTIG and PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
                       p = PAUSEN.pop(0)
                       print(f"relay antwortete HTTP {e.code} - neuer versuch in {p}s",
                             file=sys.stderr)
@@ -176,13 +523,29 @@ jobs:
                   # A reviewer that could not run must fail loudly, not pass as clean.
                   print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
                   sys.exit(1)
-              except urllib.error.URLError as e:
-                  if PAUSEN:
+              # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
+              # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
+              # Vererbung ist ConnectionResetError < ConnectionError < OSError -
+              # `urllib.error.URLError` steht darin NICHT und `TimeoutError` auch
+              # nicht. Der Abriss lief deshalb an dieser Leiter VORBEI, obwohl sie
+              # genau dafuer gebaut ist: Rueckverfolgungsbericht, Ende, roter Haken.
+              # Gemessen an acht gleichzeitig geoeffneten PRs - sieben Durchsichten
+              # starben so, keine einzige hat eine Wartezeit oder ein Ersatzmodell
+              # auch nur probiert.
+              #
+              # Das ist nicht bloss ein roter Haken: das Tor nach `test` verlangt je
+              # Commit eine Durchsicht. Ein Abriss haelt also die Auslieferung ALLER
+              # Fenster an, bis jemand von Hand neu startet.
+              #
+              # ConnectionError und nicht OSError - Letzteres saugt auch Datei- und
+              # Rechtefehler ein und wiederholt sie als waeren es Netzfehler.
+              except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                  if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
                       p = PAUSEN.pop(0)
-                      print(f"netzfehler ({e.reason}) - neuer versuch in {p}s", file=sys.stderr)
+                      print(f"netzfehler ({getattr(e, 'reason', None) or type(e).__name__}) - neuer versuch in {p}s", file=sys.stderr)
                       time.sleep(p)
                       continue
-                  print(f"Model call failed: {e.reason}", file=sys.stderr)
+                  print(f"Model call failed: {getattr(e, 'reason', None) or type(e).__name__}", file=sys.stderr)
                   sys.exit(1)
 
           text = out["choices"][0]["message"]["content"] or ""

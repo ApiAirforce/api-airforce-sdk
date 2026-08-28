@@ -68,6 +68,15 @@ on:
   workflow_dispatch:
 
 permissions:
+  # WITHOUT THIS LINE THIS WORKFLOW BELIEVES THE WRONG THING. A `permissions:`
+  # block sets everything unlisted to `none`, so every pull-request call answers
+  # 403 -- and `gh_json(...) or []` turns that 403 into "this commit belongs to
+  # no pull request", which is indistinguishable from a real empty result.
+  # Nothing turns red; the gate just reads a falsehood. Measured in `frontend`:
+  # three consecutive gate runs called the same commit unreviewed while its
+  # review sat on the pull request, and the gate stayed shut for two days.
+  # Same one line as backend#336 and frontend#133. See backend#363.
+  pull-requests: read
   contents: write
   issues: write
   actions: read
