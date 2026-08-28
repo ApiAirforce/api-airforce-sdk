@@ -59,15 +59,29 @@ concurrency:
 
 jobs:
   open-release-pr:
-    # Auf den eigenen Runner umgezogen (19.08.2026), gleicher Grund wie in
-    # `promote-snapshot.yml` und `sync-main-to-dev.yml`: `ubuntu-latest`-Jobs
-    # bekommen in dieser Organisation keinen Runner mehr zugewiesen.
+    # `ubuntu-latest`, NOT the org's own runner - this repository is public.
     #
-    # Hier faellt der Ausfall besonders spaet auf. Der Ablauf meldet
-    # „skipped", solange kein Commit den Marker traegt — er sieht also gesund
-    # aus, und dass er nicht mehr STARTEN kann, merkt man erst an dem Tag, an
-    # dem man ein Release ausloest. Der Job braucht nur `git` und `gh`.
-    runs-on: [self-hosted, airforce-heavy]
+    # The move to `[self-hosted, airforce-heavy]` on 19.08.2026 was right for
+    # the six private repositories, where `ubuntu-latest` jobs no longer get a
+    # runner assigned. It was carried into this file as well, and here it is
+    # wrong twice over:
+    #
+    #   - There is no runner to get. `airforce-heavy` is registered on the
+    #     private repositories; a public repository is not offered them.
+    #     Measured 28.08.2026: this job sat `queued` for 30 minutes with an
+    #     otherwise idle queue, while every other workflow in this repository
+    #     ran on `ubuntu-latest` in the same minutes. It would have waited
+    #     forever - the release of four commits simply never started.
+    #   - It contradicts this repository's own rule. `promote-to-test.yml`
+    #     states it in the file: a self-hosted runner on a public repository
+    #     is attackable through a fork pull request, so this repository uses
+    #     hosted runners on purpose.
+    #
+    # The failure hides well, which is why it went unnoticed for nine days:
+    # the workflow reports `skipped` while no commit carries the marker, so it
+    # looks healthy, and that it can no longer START only shows on the day
+    # someone triggers a release. The job needs nothing but `git` and `gh`.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
