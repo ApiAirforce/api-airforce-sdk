@@ -238,10 +238,36 @@ jobs:
           # einen wartenden Kandidaten von "0 Commit(s)". Das war eine Sperre,
           # die sich von selbst nie wieder geoeffnet haette: es gab nichts
           # abzunehmen, und trotzdem hielt das Tor darauf zu.
-          kandidat = (test is not None and test != main
+          # A CANDIDATE THAT CARRIES NOTHING IS NOT A CANDIDATE.
+          #
+          # `test` can sit ahead of `main` in COMMITS while its diff against
+          # `main` is empty: the automatic `main -> dev` sync comes back around
+          # and lands on `test` as one merge commit with no file change in it.
+          #
+          # Measured 28.08.2026 in api-airforce-status and
+          # api-airforce-enterprise-all: `test` one commit ahead of `main`,
+          # `compare/main...test` reporting 0 files - and the release pull
+          # request for it could not be merged at all, because GitHub demands
+          # an extra approval for a change attributed to a bot and does not
+          # accept one from the person who triggered the run.
+          #
+          # So the gate held `dev` back waiting for an acceptance that had
+          # nothing to accept and no way to complete - and every release
+          # leaves one of these behind, so it would recur after each one.
+          # Same disease as the `test`-behind-`main` case above, one step
+          # over: a commit COUNT is not a measure of CONTENT.
+          #
+          # `git diff --quiet` exits 0 when the two trees are identical, so
+          # `git()` hands back "" there and None when they differ.
+          leer = (test is not None and test != main
+                  and git("diff", "--quiet", main, test, check=False) is not None)
+          kandidat = (test is not None and test != main and not leer
                       and git("merge-base", "--is-ancestor", main, test,
                               check=False) is not None)
-          veraltet = test is not None and test != main and not kandidat
+          veraltet = test is not None and test != main and not kandidat and not leer
+          if leer:
+              print("test is ahead of main but carries NO change (empty diff) - "
+                    "not a candidate, fast-forwarding.")
           if veraltet:
               print("test liegt HINTER main - `main` ist die Basis, `test` wird nachgezogen.")
           basis = test if (test is not None and not veraltet) else main
@@ -320,7 +346,49 @@ jobs:
           # Tor ohnehin erneut an, und sobald diese Datei auf `main` liegt,
           # uebernimmt `workflow_run` und trifft den Zeitpunkt exakt.
           st = stand(dev)
-          offen = [n for n in PFLICHT if st.get(n, {}).get("status") != "completed"]
+
+          # A CHECK THAT NEVER STARTED IS NOT A CHECK THAT IS STILL RUNNING.
+          #
+          # `st.get(n, {})` returns an empty dict for a name with no check run
+          # at all, and its `status` is None, which is != "completed" - so both
+          # states came out of the same sentence. They are not the same thing:
+          # one resolves itself in minutes, the other never does.
+          #
+          # Measured 28.08.2026: after the automatic `main -> dev` sync, FOUR
+          # repositories carried a `dev` head with ZERO check runs, because a
+          # push made with `GITHUB_TOKEN` triggers no workflow. The gate
+          # reported "the checks are still running" for over two hours about
+          # checks that were never going to start, and nothing reached `test`
+          # in any of them until a person merged something by hand. On the
+          # `dev` head before it, pushed by a person, the same checks were
+          # green - so it was never a property of the code.
+          #
+          # Both states still hold the gate; neither is a verdict about `dev`.
+          # But they call for different actions, so they no longer share a
+          # sentence.
+          fehlt = [n for n in PFLICHT if n not in st]
+          if fehlt:
+              bericht(
+                  "A required check NEVER STARTED on the `dev` head.",
+                  ["No run at all: " + ", ".join("`%s`" % n for n in fehlt),
+                   "",
+                   "This is NOT the same as `still running`, and it does NOT resolve",
+                   "itself. Not a single run of these checks exists on this commit,",
+                   "so there is nothing to wait for.",
+                   "",
+                   "Most likely cause: the commit was made by a bot. A push made with",
+                   "`GITHUB_TOKEN` triggers NO workflows - so the `main -> dev` sync",
+                   "leaves behind a `dev` head that no check ever sees.",
+                   "",
+                   "Remedy: start the check by hand",
+                   "(`gh workflow run <workflow> --ref dev`), or merge a pull request",
+                   "into `dev` - either produces a head the CI actually runs on.",
+                   "",
+                   "Head: `%s`" % dev[:8]])
+              sys.exit(0)
+
+          offen = [n for n in PFLICHT
+                   if n in st and st[n].get("status") != "completed"]
           if offen:
               bericht(
                   "Die Pruefungen auf dem `dev`-Kopf laufen noch.",
