@@ -413,12 +413,46 @@ jobs:
                       #
                       # `author_association` is carried by both endpoints we
                       # read here, commit comments and PR issue comments.
-                      DARF_ANTWORTEN = ("OWNER", "MEMBER", "COLLABORATOR")
-                      beantwortet = any(
-                          c.get("author_association") in DARF_ANTWORTEN
-                          and (c.get("created_at") or "") > (juengste.get("created_at") or "")
-                          and re.search(r"#erledigt|#fehlalarm", c.get("body") or "", re.I)
-                          for c in komm)
+                      # ...BUT `author_association` IS NOT A PERMISSION
+                      # (second review finding `hoch`, 28.08.2026, and it is
+                      # right). `MEMBER` only says `in the organisation` and
+                      # `COLLABORATOR` covers read and triage as well - both
+                      # would still open the gate.
+                      #
+                      # Tightening the association instead of replacing it
+                      # was measured and rejected: the answers written here
+                      # so far all carry `MEMBER`, so an `OWNER`-only test
+                      # would lock out the very people who answer findings.
+                      # Ask the repository what the author may actually do.
+                      #
+                      # The cheap tests run first, so the extra request
+                      # happens only for a comment that carries a marker and
+                      # is newer than the review it answers.
+                      _rechte = {}
+
+                      def _schreibrecht(login):
+                          if not login:
+                              return False
+                          if login not in _rechte:
+                              d = gh_json("repos/%s/collaborators/%s/permission"
+                                          % (REPO, login))
+                              if d is None:
+                                  # The lookup itself failed. Do not guess in
+                                  # either direction - refuse, and say so
+                                  # where someone will read it.
+                                  print("::warning::cannot verify write access for "
+                                        "%s - answer not counted" % login)
+                              _rechte[login] = (d or {}).get("permission") or ""
+                          return _rechte[login] in ("admin", "write")
+
+                      def _ist_antwort(c):
+                          if (c.get("created_at") or "") <= (juengste.get("created_at") or ""):
+                              return False
+                          if not re.search(r"#erledigt|#fehlalarm", c.get("body") or "", re.I):
+                              return False
+                          return _schreibrecht((c.get("user") or {}).get("login"))
+
+                      beantwortet = any(_ist_antwort(c) for c in komm)
                       if not beantwortet:
                           hoch.append((sha, betreff, anzahl,
                                        juengste.get("html_url") or ""))
