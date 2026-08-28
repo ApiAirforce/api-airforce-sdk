@@ -266,8 +266,8 @@ jobs:
                               check=False) is not None)
           veraltet = test is not None and test != main and not kandidat and not leer
           if leer:
-              print("test ist vor main, traegt aber KEINE Aenderung (leerer Diff) - "
-                    "kein Kandidat, es wird vorgespult.")
+              print("test is ahead of main but carries NO change (empty diff) - "
+                    "not a candidate, fast-forwarding.")
           if veraltet:
               print("test liegt HINTER main - `main` ist die Basis, `test` wird nachgezogen.")
           basis = test if (test is not None and not veraltet) else main
@@ -369,22 +369,22 @@ jobs:
           fehlt = [n for n in PFLICHT if n not in st]
           if fehlt:
               bericht(
-                  "Eine Pflicht-Pruefung hat auf dem `dev`-Kopf NIE ANGEFANGEN.",
-                  ["Ohne Lauf: " + ", ".join("`%s`" % n for n in fehlt),
+                  "A required check NEVER STARTED on the `dev` head.",
+                  ["No run at all: " + ", ".join("`%s`" % n for n in fehlt),
                    "",
-                   "Das ist etwas anderes als `laeuft noch`, und es geht NICHT von",
-                   "selbst weiter. Auf diesem Commit existiert kein einziger Lauf",
-                   "dieser Pruefung - es gibt nichts, worauf man warten koennte.",
+                   "This is NOT the same as `still running`, and it does NOT resolve",
+                   "itself. Not a single run of these checks exists on this commit,",
+                   "so there is nothing to wait for.",
                    "",
-                   "Haeufigste Ursache: der Commit stammt von einem Bot. Ein Push mit",
-                   "`GITHUB_TOKEN` loest KEINE Ablaeufe aus - der Abgleich `main -> dev`",
-                   "hinterlaesst deshalb einen `dev`-Kopf, den keine Pruefung je sieht.",
+                   "Most likely cause: the commit was made by a bot. A push made with",
+                   "`GITHUB_TOKEN` triggers NO workflows - so the `main -> dev` sync",
+                   "leaves behind a `dev` head that no check ever sees.",
                    "",
-                   "Abhilfe: die Pruefung von Hand anstossen",
-                   "(`gh workflow run <ablauf> --ref dev`), oder einen PR nach `dev`",
-                   "mergen - beides erzeugt einen Kopf, auf dem die CI laeuft.",
+                   "Remedy: start the check by hand",
+                   "(`gh workflow run <workflow> --ref dev`), or merge a pull request",
+                   "into `dev` - either produces a head the CI actually runs on.",
                    "",
-                   "Stand: `%s`" % dev[:8]])
+                   "Head: `%s`" % dev[:8]])
               sys.exit(0)
 
           offen = [n for n in PFLICHT
