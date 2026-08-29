@@ -1,51 +1,51 @@
 # ============================================================================
-# DAS TOR ZWISCHEN `dev` UND `test`.
+# THE GATE BETWEEN `dev` AND `test`.
 #
-# DIE KETTE (anes-Entscheid 2026-08-23):
+# THE CHAIN (anes decision 2026-08-23):
 #
-#     dev  ->  [dieses Tor]  ->  test  ->  [Abnahme]  ->  main = prod
+#     dev  ->  [this gate]  ->  test  ->  [acceptance]  ->  main = prod
 #
-#   `dev`   bleibt offen. Jedes Fenster pusht weiter direkt, kein PR-Zwang.
-#   `test`  ist der EINGEFRORENE Kandidat. Hier wird funktional abgenommen.
-#   `main`  ist die Auslieferung.
+#   `dev`   stays open. Every window pushes straight ahead, no PR requirement.
+#   `test`  is the FROZEN candidate. Functional acceptance happens here.
+#   `main`  is the delivery.
 #
-# WARUM EIN EINGEFRORENER ZWEIG UND NICHT EINFACH `dev`: solange `dev` waehrend
-# der Pruefung weiterlaeuft, sind "geprueft" und "ausgeliefert" nie derselbe
-# Baum. Man prueft dann einen Stand, den niemand ausliefert, und liefert einen
-# aus, den niemand geprueft hat. `test` steht still, bis er abgenommen ist.
+# WHY A FROZEN BRANCH AND NOT JUST `dev`: as long as `dev` keeps moving while
+# it is being checked, "checked" and "delivered" are never the same tree. You
+# end up checking a state nobody ships, and shipping one nobody checked.
+# `test` stands still until it is accepted.
 #
-# WAS DIESES TOR VERLANGT, alle drei Punkte:
-#   1. Jede PFLICHT-Pruefung ist auf dem dev-Kopf gruen.
-#   2. Jeder Code-Commit, der mitfaehrt, hat seine automatische Durchsicht.
-#   3. Kein Befund der Schwere `hoch` ist unbeantwortet.
+# WHAT THIS GATE DEMANDS, all three:
+#   1. Every REQUIRED check is green on the dev head.
+#   2. Every code commit coming along has its automated review.
+#   3. No finding of severity `hoch` is unanswered.
 #
-# ES GIBT KEINEN UMWEG. Kein `--force`, kein Cherry-Pick, keine Ausnahme-Eingabe.
-# `test` wird VORGESPULT, nie gemergt - damit `main`, `test` und `dev` strukturell
-# nicht auseinanderlaufen koennen (dieselbe Begruendung wie in release-to-main.yml,
-# anes-Ansage 2026-08-18).
+# THERE IS NO WAY AROUND. No `--force`, no cherry-pick, no exception input.
+# `test` is FAST-FORWARDED, never merged - so `main`, `test` and `dev`
+# structurally cannot drift apart (same reasoning as in release-to-main.yml,
+# anes announcement 2026-08-18).
 #
-# WAS PASSIERT, WENN DAS TOR ZU IST: dieser Lauf wird NICHT rot - ein zugehaltenes
-# Tor ist der Normalfall, kein Defekt. Stattdessen steht der Grund in EINEM
-# selbstschliessenden Issue. Das ist zugleich der Waechter ueber `dev`: wer ein
-# rotes `dev` hinterlaesst, blockiert die Auslieferung ALLER - und erfaehrt es hier.
+# WHAT HAPPENS WHEN THE GATE HOLDS: this run does NOT go red - a held gate is
+# the normal case, not a defect. Instead the reason is recorded in ONE
+# self-closing issue. That doubles as the watch over `dev`: whoever leaves a
+# red `dev` behind blocks the delivery of EVERYONE - and finds out here.
 #
-# WARUM DER `push`-AUSLOESER MIT WARTESCHLEIFE:
-# `workflow_run` und `schedule` lesen die Datei IMMER vom Vorgabe-Zweig (`main`).
-# Solange dieses Tor dort nicht liegt, feuert davon nichts - genau die Falle, in
-# die review-audit.yml am 23.08. gelaufen ist. Ein `push`-Ausloeser dagegen nimmt
-# die Datei des GESCHOBENEN Zweiges und wirkt sofort. Der Preis: beim Push
-# laufen die Pruefungen oft noch. Dieser Ablauf WARTET dann NICHT - er gibt den
-# Runner frei und laesst sich vom naechsten Push erneut anstossen (Begruendung
-# an der Stelle im Code). Sobald die Datei auf `main` liegt, uebernimmt
-# `workflow_run` und trifft den Zeitpunkt exakt.
+# WHY THE `push` TRIGGER DOES NOT WAIT:
+# `workflow_run` and `schedule` ALWAYS read the file from the default branch
+# (`main`). As long as this gate is not there, none of them fires - exactly
+# the trap review-audit.yml walked into on 08-23. A `push` trigger instead
+# takes the file of the PUSHED branch and works immediately. The price: on
+# the push the checks are often still running. This workflow does NOT wait
+# then - it frees the runner and lets the next push trigger it again
+# (reasoning at the place in the code). Once the file sits on `main`,
+# `workflow_run` takes over and hits the timing exactly.
 # ============================================================================
 
-# HINWEIS ZU DIESEM OEFFENTLICHEN REPO: die Datei ist bis auf zwei Zeilen
-# ZEICHENGLEICH mit der in den anderen Repos - eine Vorlage, viele Instanzen,
-# damit es nur EINE Umsetzung gibt. Die zwei Unterschiede sind noetig:
-# `ubuntu-latest` statt eines eigenen Runners (ein self-hosted Runner an einem
-# oeffentlichen Repo ist ueber einen Fork-PR angreifbar), und DURCHSICHT_NOETIG
-# steht auf `nein`, weil es hier kein review-push.yml gibt.
+# NOTE ON THIS PUBLIC REPO: this file is character-identical to the one in
+# the other repos except for two lines - one template, many instances, so
+# there is only ONE implementation. The two differences are necessary:
+# `ubuntu-latest` instead of a self-hosted runner (a self-hosted runner on a
+# public repo is attackable through a fork PR), and DURCHSICHT_NOETIG is set
+# to `nein`, because there is no review-push.yml here.
 
 name: promote to test
 
@@ -55,19 +55,34 @@ on:
   workflow_run:
     workflows: ['CI']
     types: [completed]
-    # OHNE DIESEN FILTER SCHIESST SICH DAS TOR SELBST AB. Die CI laeuft auch auf
-    # `test` und `main`; jeder dieser Laeufe loeste hier ein `workflow_run` aus.
-    # Der Job stieg zwar sofort wieder aus ("kam nicht von dev") - aber die
-    # Abbruch-Regel unten greift VOR der Job-Logik, und so hat ein bedeutungsloser
-    # Lauf auf `main` den einzigen Lauf abgebrochen, der wirklich etwas zu pruefen
-    # hatte. Gemessen am 23.08.2026 im Frontend: `dev` stand mit allem gruen und
-    # fertiger Durchsicht 1 Commit vor `test`, und der zugehoerige Tor-Lauf war
-    # `cancelled` - abgeschossen von zwei `workflow_run`-Laeufen auf dem ALTEN
-    # Stand `d163669d`. Der Zweigfilter haelt sie jetzt schon vom Starten ab.
+    # WITHOUT THIS FILTER THE GATE SHOOTS ITSELF DOWN. The CI also runs on
+    # `test` and `main`; every one of those runs triggered a `workflow_run`
+    # here. The job then bailed immediately ("did not come from dev") - but
+    # the cancel rule below fires BEFORE the job logic, so a meaningless run
+    # on `main` cancelled the one run that actually had something to check.
+    # Measured 2026-08-23 in the frontend: `dev` stood one commit ahead of
+    # `test`, everything green and the review done, and the matching gate run
+    # was `cancelled` - shot down by two `workflow_run` runs on the OLD state
+    # `d163669d`. The branch filter now keeps them from starting at all.
     branches: [dev]
   workflow_dispatch:
 
 permissions:
+  contents: write
+  issues: write
+  actions: read
+  # WITHOUT THIS LINE THE GATE CHECKS NOTHING. A `permissions:` block sets
+  # everything not mentioned to `none`; `/commits/<sha>/check-runs` then
+  # answers 403. Measured 2026-08-23: in all five PRIVATE repos the gate
+  # reported "checks are still running", although every check had been green
+  # for an hour and a half. In the PUBLIC sdk repo it went unnoticed because
+  # check runs are readable for anyone there - a difference that hid the
+  # cause for a long time.
+  checks: read
+  # Older workflows report via the status API instead of as a check run.
+  # Today nothing here uses it; the line costs nothing and keeps the same
+  # silent gap from coming back through the other door.
+  statuses: read
   # WITHOUT THIS LINE THIS WORKFLOW BELIEVES THE WRONG THING. A `permissions:`
   # block sets everything unlisted to `none`, so every pull-request call answers
   # 403 -- and `gh_json(...) or []` turns that 403 into "this commit belongs to
@@ -77,32 +92,18 @@ permissions:
   # review sat on the pull request, and the gate stayed shut for two days.
   # Same one line as backend#336 and frontend#133. See backend#363.
   pull-requests: read
-  contents: write
-  issues: write
-  actions: read
-  # OHNE DIESE ZEILE PRUEFT DAS TOR NICHTS. Ein `permissions:`-Block setzt
-  # alles Nicht-Genannte auf `none`; `/commits/<sha>/check-runs` antwortet dann
-  # mit 403. Gemessen am 23.08.2026: in allen fuenf PRIVATEN Repos meldete das
-  # Tor daraufhin "Pruefungen laufen noch", obwohl jede Pruefung seit anderthalb
-  # Stunden gruen war. Im OEFFENTLICHEN sdk-Repo fiel es nicht auf, weil
-  # Check-Runs dort ohnehin fuer jeden lesbar sind - ein Unterschied, der die
-  # Ursache lange verdeckt hat.
-  checks: read
-  # Aeltere Ablaeufe melden ueber die Status-API statt als Check-Run. Heute
-  # nutzt das hier niemand; die Zeile kostet nichts und verhindert, dass
-  # dieselbe stille Luecke ueber den anderen Weg zurueckkommt.
-  statuses: read
 
-# Ein wartender Lauf genuegt. Der neueste dev-Stand ist der, der nach `test`
-# soll - ein aelterer Waerter waere nur noch Ballast auf dem Runner.
+# One waiting run is enough. The newest dev state is the one that should go
+# to `test` - an older waiter would just be ballast on the runner.
 concurrency:
   group: promote-to-test
   cancel-in-progress: true
 
 env:
-  # Die Namen sind die ANGEZEIGTEN Job-Namen, so wie sie als Check-Run erscheinen.
-  # Bewusst NICHT dabei: `review` - ein roter Durchsichts-Lauf sagt nichts darueber,
-  # ob eine Durchsicht am Commit steht. Das prueft Punkt 2 direkt am Commit.
+  # The names are the DISPLAYED job names, as they appear as a check run.
+  # Deliberately NOT included: `review` - a red review run says nothing about
+  # whether a review is attached to the commit. Point 2 checks that directly
+  # at the commit.
   PFLICHT: |
     TypeScript
     Java
@@ -113,11 +114,10 @@ env:
     Dart
     Rust
   TITEL: 'dev kommt nicht nach test'
-  # `nein` NUR fuer Repos ohne review-push.yml. Dort gibt es an einem
-  # Direkt-Push gar keine Durchsicht, die das Tor finden koennte - es wuerde
-  # jeden Commit als "ohne Durchsicht" melden und nie aufgehen. Das Tor
-  # verlangt dann die Pruefungen, und nur die. Wer den Reviewer dort
-  # nachruestet, stellt das hier auf `ja`.
+  # `nein` ONLY for repos without review-push.yml. There, a direct push
+  # carries no review the gate could find - it would report every commit as
+  # "without review" and never open. The gate then demands the checks, and
+  # only those. Whoever wires up the reviewer there switches this to `ja`.
   DURCHSICHT_NOETIG: 'nein'
 
 jobs:
@@ -130,25 +130,25 @@ jobs:
           fetch-depth: 0
           ref: dev
 
-      - name: Tor pruefen und test vorspulen
+      - name: Check the gate and fast-forward test
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          EREIGNIS: ${{ github.event_name }}
-          WR_ZWEIG: ${{ github.event.workflow_run.head_branch }}
+          EVENT: ${{ github.event_name }}
+          WR_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           python3 - <<'PYEOF'
           import json, os, re, subprocess, sys, time
 
           REPO = os.environ["REPO"]
           TITEL = os.environ["TITEL"]
-          EREIGNIS = os.environ.get("EREIGNIS") or ""
-          WR_ZWEIG = os.environ.get("WR_ZWEIG") or ""
+          EVENT = os.environ.get("EVENT") or ""
+          WR_BRANCH = os.environ.get("WR_BRANCH") or ""
           PFLICHT = [z.strip() for z in (os.environ.get("PFLICHT") or "").splitlines()
                      if z.strip()]
           CODE = (".rs", ".ts", ".tsx", ".js", ".mjs", ".py", ".sql", ".toml",
                   ".yml", ".yaml", ".json")
-          TRENN = "\x1f"
+          SEP = "\x1f"
 
           def git(*a, check=True):
               r = subprocess.run(["git", *a], capture_output=True, text=True)
@@ -159,60 +159,60 @@ jobs:
                   return None
               return r.stdout.strip()
 
-          def gh_json(pfad, *extra, laut=False):
-              r = subprocess.run(["gh", "api", pfad, *extra],
+          def gh_json(path, *extra, loud=False):
+              r = subprocess.run(["gh", "api", path, *extra],
                                  capture_output=True, text=True)
               if r.returncode != 0:
-                  # `laut` fuer die Abfragen, deren Fehlschlag das Urteil
-                  # verfaelscht statt es nur zu verkuerzen. Ein stilles None
-                  # sah hier aus wie "keine Pruefung gefunden" und damit wie
-                  # "laeuft noch" - der Lauf war gruen und hatte nichts geprueft.
-                  if laut:
+                  # `loud` for the queries whose failure would DISTORT the
+                  # verdict instead of merely shortening it. A silent None
+                  # looked here like "no check found" and so like "still
+                  # running" - the run was green and had checked nothing.
+                  if loud:
                       print("::error::gh api %s -> %s"
-                            % (pfad, (r.stderr or r.stdout).strip()[:300]))
+                            % (path, (r.stderr or r.stdout).strip()[:300]))
                   return None
               try:
                   return json.loads(r.stdout)
               except Exception:
-                  if laut:
-                      print("::error::gh api %s lieferte kein JSON" % pfad)
+                  if loud:
+                      print("::error::gh api %s did not return JSON" % path)
                   return None
 
-          def bericht(grund, zeilen):
-              """Ein Issue statt eines roten Laufs - siehe Kopf."""
+          def report(reason, lines):
+              """One issue instead of a red run - see the header."""
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
-                  f.write("## %s\n\n%s\n\n%s\n" % (TITEL, grund, "\n".join(zeilen)))
-              print(grund)
-              for z in zeilen:
+                  f.write("## %s\n\n%s\n\n%s\n" % (TITEL, reason, "\n".join(lines)))
+              print(reason)
+              for z in lines:
                   print("  " + z)
-              koerper = ["**%s**" % grund, ""] + zeilen + [
+              body = ["**%s**" % reason, ""] + lines + [
                   "",
-                  "_Dieses Issue schliesst sich selbst, sobald `test` vorgespult wurde._",
-                  "_Es ist kein Defekt dieses Ablaufs, sondern der Zustand von `dev`._",
+                  "_This issue closes itself as soon as `test` has been fast-forwarded._",
+                  "_It is not a defect of this workflow, but the state of `dev`._",
               ]
-              alt = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
-              nummer = next((i["number"] for i in alt
+              old = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
+              number = next((i["number"] for i in old
                              if i.get("title") == TITEL and "pull_request" not in i), None)
-              if nummer:
-                  subprocess.run(["gh", "issue", "edit", str(nummer), "-R", REPO,
-                                  "--body", "\n".join(koerper)],
+              if number:
+                  subprocess.run(["gh", "issue", "edit", str(number), "-R", REPO,
+                                  "--body", "\n".join(body)],
                                  capture_output=True, text=True)
               else:
                   subprocess.run(["gh", "issue", "create", "-R", REPO,
-                                  "--title", TITEL, "--body", "\n".join(koerper)],
+                                  "--title", TITEL, "--body", "\n".join(body)],
                                  capture_output=True, text=True)
 
-          def issue_zu(text):
-              alt = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
-              nummer = next((i["number"] for i in alt
+          def close_issue(text):
+              old = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
+              number = next((i["number"] for i in old
                              if i.get("title") == TITEL and "pull_request" not in i), None)
-              if nummer:
-                  subprocess.run(["gh", "issue", "close", str(nummer), "-R", REPO,
+              if number:
+                  subprocess.run(["gh", "issue", "close", str(number), "-R", REPO,
                                   "--comment", text], capture_output=True, text=True)
 
-          # `workflow_run` feuert fuer JEDEN Zweig. Nur `dev` ist gemeint.
-          if EREIGNIS == "workflow_run" and WR_ZWEIG != "dev":
-              print("workflow_run kam von '%s', nicht von dev - nichts zu tun." % WR_ZWEIG)
+          # `workflow_run` fires for EVERY branch. Only `dev` is meant.
+          if EVENT == "workflow_run" and WR_BRANCH != "dev":
+              print("workflow_run came from '%s', not dev - nothing to do." % WR_BRANCH)
               sys.exit(0)
 
           subprocess.run(["git", "fetch", "origin", "--prune"], capture_output=True)
@@ -221,23 +221,24 @@ jobs:
           test = git("rev-parse", "--verify", "-q", "origin/test", check=False)
 
           if not dev or not main:
-              print("::error::dev oder main nicht aufloesbar.")
+              print("::error::dev or main cannot be resolved.")
               sys.exit(1)
 
-          # Ohne `test` ist `main` die Basis - der erste Durchlauf legt den Zweig an.
+          # Without `test`, `main` is the basis - the first pass creates the
+          # branch.
           #
-          # `test` KANN AUCH HINTER `main` LIEGEN, und dann ist es kein Kandidat,
-          # sondern ein Rest: `main` ist ohne ihn weitergezogen. Gemessen am
-          # 23.08. im Frontend - `test` stand 20 Commits HINTER `main`, weil ein
-          # Release `dev` direkt ausgeliefert hat. Moeglich war das, weil auf
-          # `main` noch die alte Fassung des Release-Ablaufs lag und
-          # `workflow_dispatch` die Datei IMMER vom Vorgabe-Zweig liest, nie vom
-          # Zweig, den man auswaehlt.
+          # `test` CAN ALSO SIT BEHIND `main`, and then it is not a candidate
+          # but a leftover: `main` has moved on without it. Measured 08-23 in
+          # the frontend - `test` stood 20 commits BEHIND `main`, because a
+          # release delivered `dev` directly. That was possible because `main`
+          # still carried the old version of the release workflow, and
+          # `workflow_dispatch` ALWAYS reads the file from the default branch,
+          # never from the branch you select.
           #
-          # Die alte Fassung hier fragte nur `test != main` und meldete daraufhin
-          # einen wartenden Kandidaten von "0 Commit(s)". Das war eine Sperre,
-          # die sich von selbst nie wieder geoeffnet haette: es gab nichts
-          # abzunehmen, und trotzdem hielt das Tor darauf zu.
+          # The old version here only asked `test != main` and accordingly
+          # reported a waiting candidate of "0 commit(s)". That was a lock
+          # that would never have opened by itself: there was nothing to
+          # accept, and still the gate held because of it.
           # A CANDIDATE THAT CARRIES NOTHING IS NOT A CANDIDATE.
           #
           # `test` can sit ahead of `main` in COMMITS while its diff against
@@ -259,93 +260,94 @@ jobs:
           #
           # `git diff --quiet` exits 0 when the two trees are identical, so
           # `git()` hands back "" there and None when they differ.
-          leer = (test is not None and test != main
-                  and git("diff", "--quiet", main, test, check=False) is not None)
-          kandidat = (test is not None and test != main and not leer
-                      and git("merge-base", "--is-ancestor", main, test,
-                              check=False) is not None)
-          veraltet = test is not None and test != main and not kandidat and not leer
-          if leer:
+          empty = (test is not None and test != main
+                   and git("diff", "--quiet", main, test, check=False) is not None)
+          candidate = (test is not None and test != main and not empty
+                       and git("merge-base", "--is-ancestor", main, test,
+                               check=False) is not None)
+          stale = test is not None and test != main and not candidate and not empty
+          if empty:
               print("test is ahead of main but carries NO change (empty diff) - "
                     "not a candidate, fast-forwarding.")
-          if veraltet:
-              print("test liegt HINTER main - `main` ist die Basis, `test` wird nachgezogen.")
-          basis = test if (test is not None and not veraltet) else main
-          neu = test is None
+          if stale:
+              print("test sits BEHIND main - `main` is the basis, `test` is pulled along.")
+          basis = test if (test is not None and not stale) else main
+          creating = test is None
 
           if dev == basis:
-              issue_zu("`test` steht auf dem Stand von `dev` - nichts offen.")
-              print("test == dev, nichts zu tun.")
+              close_issue("`test` is on the state of `dev` - nothing open.")
+              print("test == dev, nothing to do.")
               sys.exit(0)
 
           if git("merge-base", "--is-ancestor", basis, dev, check=False) is None:
-              bericht(
-                  "`dev` kann `test` nicht vorspulen - die Zweige sind auseinandergelaufen.",
-                  ["Das darf in dieser Kette nicht vorkommen: `main` -> `test` -> `dev` sind",
-                   "reine Vorspulungen. Wer hier landet, hat auf `test` oder `main` etwas",
-                   "abgelegt, das nicht ueber `dev` kam.",
+              report(
+                  "`dev` cannot fast-forward `test` - the branches have drifted apart.",
+                  ["That must not happen in this chain: `main` -> `test` -> `dev` are",
+                   "pure fast-forwards. Whoever ends up here has put something on",
+                   "`test` or `main` that did not come through `dev`.",
                    "",
-                   "Reparatur: den fremden Stand nach `dev` holen (Merge auf `dev`), dann",
-                   "laeuft das Tor wieder. **Kein Cherry-Pick.**"])
+                   "Repair: bring the foreign state into `dev` (a merge into `dev`),",
+                   "then the gate runs again. **No cherry-pick.**"])
               sys.exit(0)
 
-          # Ein Kandidat, der noch nicht ausgeliefert ist, wird NICHT ueberholt -
-          # sonst pruefte man wieder einen Baum, der sich unter der Hand aendert.
-          if kandidat and EREIGNIS != "workflow_dispatch":
-              offen = git("rev-list", "--count", "%s..%s" % (main, test)) or "?"
-              bericht(
-                  "`test` traegt einen Kandidaten, der noch nicht ausgeliefert ist.",
-                  ["`test` ist %s Commit(s) vor `main`. Solange dort etwas auf die Abnahme" % offen,
-                   "wartet, wird es nicht ueberholt - ein Kandidat, der sich unter der",
-                   "Pruefung aendert, ist kein Kandidat.",
+          # A candidate that has not been delivered yet is NOT overtaken -
+          # otherwise you would again be checking a tree that changes under
+          # your hands.
+          if candidate and EVENT != "workflow_dispatch":
+              ahead = git("rev-list", "--count", "%s..%s" % (main, test)) or "?"
+              report(
+                  "`test` carries a candidate that has not been delivered yet.",
+                  ["`test` is %s commit(s) ahead of `main`. As long as something there" % ahead,
+                   "waits for acceptance, it is not overtaken - a candidate that changes",
+                   "under review is not a candidate.",
                    "",
-                   "**Naechster Schritt: abnehmen und ausliefern** (`release to main` bzw.",
-                   "`promote-to-main`). Danach zieht dieses Tor den naechsten Stand von",
-                   "selbst nach. Wer den Kandidaten bewusst verwerfen und durch den neuesten",
-                   "`dev`-Stand ersetzen will: diesen Ablauf von Hand starten."])
+                   "**Next step: accept and deliver** (`release to main` or",
+                   "`promote-to-main`). This gate then pulls the next state along by",
+                   "itself. To deliberately discard the candidate and replace it with",
+                   "the newest `dev` state: start this workflow by hand."])
               sys.exit(0)
 
-          # ---- Punkt 1: Pflicht-Pruefungen ----------------------------------
-          def stand(sha):
+          # ---- Point 1: required checks --------------------------------------
+          def state(sha):
               d = gh_json("repos/%s/commits/%s/check-runs?per_page=100" % (REPO, sha),
-                          laut=True)
+                          loud=True)
               if d is None:
-                  # NICHT als "laeuft noch" durchgehen lassen: das waere ein
-                  # Urteil ueber Pruefungen, die gar nicht gelesen wurden.
-                  bericht("Das Tor konnte die Pruefungen NICHT LESEN.",
-                          ["Die Abfrage der Check-Runs ist fehlgeschlagen - der Fehler steht",
-                           "als `::error::` im Lauf-Protokoll.",
-                           "",
-                           "Das ist ein Defekt am Tor, kein Zustand von `dev`. Haeufigste",
-                           "Ursache: dem Token fehlt `checks: read` im `permissions:`-Block.",
-                           "",
-                           "Solange das steht, faellt NICHTS durch das Tor - es haelt zu, statt",
-                           "ungeprueft durchzuwinken."])
+                  # Do NOT let this pass as "still running": that would be a
+                  # verdict about checks that were never even read.
+                  report("The gate could NOT READ the checks.",
+                         ["The check-run query failed - the error is",
+                          "recorded as `::error::` in the run log.",
+                          "",
+                          "That is a defect of the gate, not a state of `dev`. Most",
+                          "likely cause: the token is missing `checks: read` in the",
+                          "`permissions:` block.",
+                          "",
+                          "As long as this stands, NOTHING goes through the gate - it",
+                          "holds, instead of waving things through unchecked."])
                   sys.exit(1)
-              letzte = {}
+              latest = {}
               for c in d.get("check_runs", []):
                   n = c.get("name") or ""
-                  vor = letzte.get(n)
-                  # Bei einem Neustart zaehlt der juengste Lauf desselben Namens.
-                  if vor is None or (c.get("started_at") or "") > (vor.get("started_at") or ""):
-                      letzte[n] = c
-              return letzte
+                  prior = latest.get(n)
+                  # On a restart, the newest run of the same name counts.
+                  if prior is None or (c.get("started_at") or "") > (prior.get("started_at") or ""):
+                      latest[n] = c
+              return latest
 
-          # EINMAL SCHAUEN, NICHT WARTEN.
+          # LOOK ONCE, DO NOT WAIT.
           #
-          # Hier stand eine Warteschleife von 30 min. Sie war ein Defekt, und
-          # zwar ein selbstblockierender: gemessen am 23.08. hat JEDES Repo
-          # genau EINEN eigenen Runner (Backend 3, Frontend 2). Solange dieser
-          # Job wartet, HAELT er den einzigen Runner - und die Pruefungen, auf
-          # die er wartet, brauchen genau diesen Runner. Belegt an vier Repos:
-          # CI stand ueber eine Stunde in der Warteschlange, waehrend das Tor
-          # danebensass und auf sie wartete.
+          # A 30-minute wait loop used to stand here. It was a defect, and a
+          # self-blocking one at that: measured 08-23, EVERY repo has exactly
+          # ONE runner of its own (backend 3, frontend 2). As long as this job
+          # waits, it HOLDS the only runner - and the checks it is waiting for
+          # need exactly that runner. Proven in four repos: CI stood in the
+          # queue for over an hour while the gate sat next to it waiting.
           #
-          # Also: einmal messen, und wenn die Pruefungen noch laufen, den
-          # Runner sofort wieder freigeben. Der naechste `dev`-Push stoesst das
-          # Tor ohnehin erneut an, und sobald diese Datei auf `main` liegt,
-          # uebernimmt `workflow_run` und trifft den Zeitpunkt exakt.
-          st = stand(dev)
+          # So: measure once, and if the checks are still running, free the
+          # runner immediately. The next `dev` push triggers the gate again
+          # anyway, and once this file sits on `main`, `workflow_run` takes
+          # over and hits the timing exactly.
+          st = state(dev)
 
           # A CHECK THAT NEVER STARTED IS NOT A CHECK THAT IS STILL RUNNING.
           #
@@ -366,11 +368,11 @@ jobs:
           # Both states still hold the gate; neither is a verdict about `dev`.
           # But they call for different actions, so they no longer share a
           # sentence.
-          fehlt = [n for n in PFLICHT if n not in st]
-          if fehlt:
-              bericht(
+          missing = [n for n in PFLICHT if n not in st]
+          if missing:
+              report(
                   "A required check NEVER STARTED on the `dev` head.",
-                  ["No run at all: " + ", ".join("`%s`" % n for n in fehlt),
+                  ["No run at all: " + ", ".join("`%s`" % n for n in missing),
                    "",
                    "This is NOT the same as `still running`, and it does NOT resolve",
                    "itself. Not a single run of these checks exists on this commit,",
@@ -387,87 +389,140 @@ jobs:
                    "Head: `%s`" % dev[:8]])
               sys.exit(0)
 
-          offen = [n for n in PFLICHT
-                   if n in st and st[n].get("status") != "completed"]
-          if offen:
-              bericht(
-                  "Die Pruefungen auf dem `dev`-Kopf laufen noch.",
-                  ["Noch nicht fertig: " + ", ".join("`%s`" % n for n in offen),
+          pending = [n for n in PFLICHT
+                     if n in st and st[n].get("status") != "completed"]
+          if pending:
+              report(
+                  "The checks on the `dev` head are still running.",
+                  ["Not finished yet: " + ", ".join("`%s`" % n for n in pending),
                    "",
-                   "Das ist KEIN Befund - nur ein zu frueher Blick. Dieser Lauf gibt den",
-                   "Runner sofort wieder frei, damit die Pruefungen ihn bekommen.",
+                   "This is NOT a finding - just a look taken too early. This run",
+                   "frees the runner immediately so the checks can have it.",
                    "",
-                   "Weiter geht es von selbst: der naechste Push auf `dev` stoesst das Tor",
-                   "erneut an. Wer nicht warten will, startet *promote to test* von Hand.",
+                   "It continues by itself: the next push to `dev` triggers the gate",
+                   "again. Whoever does not want to wait starts *promote to test* by hand.",
                    "",
-                   "Bleibt diese Meldung ueber Stunden stehen, ist es doch ein Befund -",
-                   "dann laeuft keine Pruefung an, und `dev` hat keine Aussage.",
+                   "If this message stands for hours, it is a finding after all -",
+                   "then no check is starting, and `dev` carries no meaning.",
                    "",
-                   "Stand: `%s`" % dev[:8]])
+                   "State: `%s`" % dev[:8]])
               sys.exit(0)
 
-          # `skipped`/`neutral` sind kein Fehlschlag: ein Job, den sein eigenes `if`
-          # ausgelassen hat, hat nichts zu sagen - er darf aber auch nichts blockieren.
-          rot = [n for n in PFLICHT
+          # `skipped`/`neutral` is not a failure: a job its own `if` skipped
+          # has nothing to say - but it must not block anything either.
+          red = [n for n in PFLICHT
                  if st.get(n, {}).get("conclusion") not in ("success", "skipped", "neutral")]
-          if rot:
-              zeilen = ["Rot auf `%s`:" % dev[:8], ""]
-              for n in rot:
+          if red:
+              lines = ["Red on `%s`:" % dev[:8], ""]
+              for n in red:
                   c = st.get(n, {})
-                  zeilen.append("- `%s` -> **%s**  %s"
-                                % (n, c.get("conclusion") or "fehlt",
-                                   c.get("html_url") or ""))
-              zeilen += ["",
-                         "Solange das steht, kommt NICHTS nach `test` und damit nichts zu",
-                         "Kunden - auch die Arbeit der anderen Fenster nicht. Deshalb muss",
-                         "`dev` jederzeit auslieferbar sein."]
-              bericht("`dev` ist rot.", zeilen)
+                  lines.append("- `%s` -> **%s**  %s"
+                               % (n, c.get("conclusion") or "missing",
+                                  c.get("html_url") or ""))
+              lines += ["",
+                        "As long as this stands, NOTHING reaches `test` and so nothing",
+                        "reaches customers - including the work of the other windows.",
+                        "That is why `dev` must be deliverable at all times."]
+              report("`dev` is red.", lines)
               sys.exit(0)
 
-          # ---- Punkt 2+3: Durchsicht und offene Befunde ---------------------
-          ohne, hoch = [], []
+          # ---- Point 2+3: review and open findings ---------------------------
+          without, high = [], []
           DURCHSICHT = (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() == "ja"
           if not DURCHSICHT:
-              print("Durchsicht wird in diesem Repo nicht verlangt (kein review-push.yml).")
-              roh = ""
+              print("The review is not required in this repo (no review-push.yml).")
+              raw = ""
           else:
-              roh = git("log", "%s..%s" % (basis, dev),
-                        "--format=%H" + TRENN + "%an" + TRENN + "%s") or ""
-              for zeile in roh.splitlines():
-                  teile = zeile.split(TRENN)
-                  if len(teile) != 3:
+              raw = git("log", "%s..%s" % (basis, dev),
+                        "--format=%H" + SEP + "%an" + SEP + "%s") or ""
+              for line in raw.splitlines():
+                  parts = line.split(SEP)
+                  if len(parts) != 3:
                       continue
-                  sha, autor, betreff = teile
-                  if autor.endswith("[bot]") or autor in ("github-actions", "dependabot"):
+                  sha, author, subject = parts
+                  if author.endswith("[bot]") or author in ("github-actions", "dependabot"):
                       continue
-                  eltern = (git("rev-list", "--parents", "-1", sha) or "").split()[1:]
-                  if len(eltern) > 1:
+                  parents = (git("rev-list", "--parents", "-1", sha) or "").split()[1:]
+                  if len(parents) > 1:
                       pulls = gh_json("repos/%s/commits/%s/pulls" % (REPO, sha)) or []
                       if any(p.get("merged_at") and p.get("merge_commit_sha") == sha
                              for p in pulls):
                           continue
-                  # `--first-parent -m`: ohne die Flaggen gibt `git show` bei einem MERGE
-                  # gar nichts aus, und jeder Merge sieht code-frei aus.
-                  dateien = (git("show", "--name-only", "--format=",
-                                 "--first-parent", "-m", sha) or "").splitlines()
-                  if not any(d.endswith(CODE) for d in dateien):
+                  # `--first-parent -m`: without the flags `git show` prints
+                  # NOTHING for a merge, and every merge then looks code-free.
+                  files = (git("show", "--name-only", "--format=",
+                               "--first-parent", "-m", sha) or "").splitlines()
+                  if not any(d.endswith(CODE) for d in files):
                       continue
 
-                  komm = gh_json("repos/%s/commits/%s/comments?per_page=100" % (REPO, sha)) or []
-                  durch = [c for c in komm
-                           if "airforce-review-push" in (c.get("body") or "")
-                           or "Automatische Durchsicht" in (c.get("body") or "")]
-                  if not durch:
-                      ohne.append((sha, betreff))
+                  # THE REVIEW COUNTS, WHEREVER IT IS (2026-08-25).
+                  # There used to be only one place: `review-push.yml` attached
+                  # it as a comment to the commit. Since `dev` only accepts
+                  # merged PRs now, every branch commit belongs to a PR - and
+                  # there it sits as a PR review, not at the commit. Whoever
+                  # only reads the commit comment reports EVERY commit as
+                  # "without review" from now on, and the gate never opens again.
+                  # ONLY WHAT THE BOT WROTE (finding `hoch`, 2026-08-25).
+                  # The recognition hung on the text in the body alone - and
+                  # anyone with review rights may write that. A review pushed in
+                  # afterwards with "Automated review" and without a finding
+                  # table would have been picked below as the newest review and
+                  # would have pushed the real findings aside: the gate would
+                  # have opened with hoch=0.
+                  # Measured who really writes it: github-actions[bot],
+                  # type == "Bot". A human cannot set `type` to Bot.
+                  # NOT affected: `#erledigt` / `#fehlalarm`. Those run over a
+                  # separate regex on `comm` and are supposed to come from humans.
+                  BOT = "github-actions[bot]"
+
+                  def _review(k):
+                      u = k.get("user") or {}
+                      if u.get("type") != "Bot" or u.get("login") != BOT:
+                          return False
+                      t = k.get("body") or ""
+                      return ("airforce-review-push" in t
+                              or "Automatische Durchsicht" in t
+                              or "Automated review" in t)
+
+                  comm = gh_json("repos/%s/commits/%s/comments?per_page=100" % (REPO, sha)) or []
+                  found = [c for c in comm if _review(c)]
+                  # PR reviews carry `submitted_at` instead of `created_at` -
+                  # without aligning them, `max(...)` below picks the wrong one
+                  # as newest and reads the findings of an outdated version.
+                  for p in (gh_json("repos/%s/commits/%s/pulls" % (REPO, sha)) or []):
+                      nr = p.get("number")
+                      if not nr:
+                          continue
+                      for r in (gh_json("repos/%s/pulls/%s/reviews?per_page=100"
+                                        % (REPO, nr)) or []):
+                          # ONLY A REVIEW AT EXACTLY THIS COMMIT.
+                          # Finding `hoch` from the review, 2026-08-25, and it
+                          # hits: a PR carries several commits, and each of its
+                          # reviews would otherwise have counted for EVERY one
+                          # of them. A commit pushed in afterwards would have
+                          # slipped through unchecked - exactly the hole this
+                          # gate is meant to close. `commit_id` says which state
+                          # the review saw.
+                          if _review(r) and r.get("commit_id") == sha:
+                              found.append({"body": r.get("body") or "",
+                                            "created_at": r.get("submitted_at") or "",
+                                            "html_url": r.get("html_url") or ""})
+                      # Answers (`#erledigt` / `#fehlalarm`) stand at the PR,
+                      # not at the commit - otherwise an answered finding keeps
+                      # counting as open.
+                      comm += (gh_json("repos/%s/issues/%s/comments?per_page=100"
+                                       % (REPO, nr)) or [])
+                  if not found:
+                      without.append((sha, subject))
                       continue
 
-                  juengste = max(durch, key=lambda c: c.get("created_at") or "")
-                  koerper = juengste.get("body") or ""
-                  m = re.search(r"airforce-schwere hoch=(\d+)", koerper)
-                  # Alt-Kommentare tragen die Marke nicht - dann die Tabelle lesen.
-                  # Fehlt die Marke, wird NICHT durchgewunken.
-                  anzahl = int(m.group(1)) if m else len(re.findall(r"\|\s*hoch\s*\|", koerper))
-                  if anzahl:
+                  newest = max(found, key=lambda c: c.get("created_at") or "")
+                  body = newest.get("body") or ""
+                  m = re.search(r"airforce-schwere hoch=(\d+)", body)
+                  # Old comments do not carry the marker - then read the table.
+                  # If the marker is missing, nothing is waved through.
+                  count = int(m.group(1)) if m else len(re.findall(r"\|\s*hoch\s*\|", body))
+                  if count:
                       # WHO MAY ANSWER (review finding `hoch`, 28.08.2026).
                       # `#erledigt` / `#fehlalarm` closes a finding and opens
                       # the gate - and this regex ran over EVERY comment
@@ -496,12 +551,12 @@ jobs:
                       # The cheap tests run first, so the extra request
                       # happens only for a comment that carries a marker and
                       # is newer than the review it answers.
-                      _rechte = {}
+                      _rights = {}
 
-                      def _schreibrecht(login):
+                      def _write_right(login):
                           if not login:
                               return False
-                          if login not in _rechte:
+                          if login not in _rights:
                               d = gh_json("repos/%s/collaborators/%s/permission"
                                           % (REPO, login))
                               if d is None:
@@ -510,58 +565,60 @@ jobs:
                                   # where someone will read it.
                                   print("::warning::cannot verify write access for "
                                         "%s - answer not counted" % login)
-                              _rechte[login] = (d or {}).get("permission") or ""
-                          return _rechte[login] in ("admin", "write")
+                              _rights[login] = (d or {}).get("permission") or ""
+                          return _rights[login] in ("admin", "write")
 
-                      def _ist_antwort(c):
-                          if (c.get("created_at") or "") <= (juengste.get("created_at") or ""):
+                      def _is_answer(c):
+                          if (c.get("created_at") or "") <= (newest.get("created_at") or ""):
                               return False
                           if not re.search(r"#erledigt|#fehlalarm", c.get("body") or "", re.I):
                               return False
-                          return _schreibrecht((c.get("user") or {}).get("login"))
+                          return _write_right((c.get("user") or {}).get("login"))
 
-                      beantwortet = any(_ist_antwort(c) for c in komm)
-                      if not beantwortet:
-                          hoch.append((sha, betreff, anzahl,
-                                       juengste.get("html_url") or ""))
+                      answered = any(_is_answer(c) for c in comm)
+                      if not answered:
+                          high.append((sha, subject, count,
+                                       newest.get("html_url") or ""))
 
-          if ohne or hoch:
-              zeilen = []
-              if hoch:
-                  zeilen += ["**Offene Befunde der Schwere `hoch`** - erst beheben, dann geht es weiter:", ""]
-                  for sha, betreff, n, url in hoch:
-                      zeilen.append("- `%s` %d Befund(e) - %s  %s" % (sha[:8], n, betreff, url))
-                  zeilen += ["",
-                             "Schliessen: einen Kommentar an DIESEN Commit haengen, der",
-                             "`#erledigt` (behoben) oder `#fehlalarm` (mit Begruendung) enthaelt.",
-                             "Ein Fehlalarm ist eine zulaessige Antwort - ihn stillschweigend",
-                             "zu uebergehen ist es nicht.", ""]
-              if ohne:
-                  zeilen += ["**Ohne automatische Durchsicht:**", ""]
-                  for sha, betreff in ohne:
-                      zeilen.append("- `%s` %s" % (sha[:8], betreff))
-                  zeilen += ["",
-                             "Nachholen: `gh workflow run review-push.yml --ref dev -f sha=<SHA>`.", ""]
-              bericht("`dev` ist gruen, aber die Durchsicht ist nicht vollstaendig.", zeilen)
+          if without or high:
+              lines = []
+              if high:
+                  lines += ["**Open findings of severity `hoch`** - fix first, then it continues:", ""]
+                  for sha, subject, n, url in high:
+                      lines.append("- `%s` %d finding(s) - %s  %s" % (sha[:8], n, subject, url))
+                  lines += ["",
+                            "Closing: attach a comment to THIS commit containing",
+                            "`#erledigt` (fixed) or `#fehlalarm` (with a reason).",
+                            "A false alarm is a valid answer - silently stepping",
+                            "over it is not.", ""]
+              if without:
+                  lines += ["**Without an automated review:**", ""]
+                  for sha, subject in without:
+                      lines.append("- `%s` %s" % (sha[:8], subject))
+                  lines += ["",
+                            "Catching up: at the PR `gh workflow run review.yml --ref dev"
+                            " -f pr=<NR>`, without a PR `gh workflow run review-push.yml"
+                            " --ref dev -f sha=<SHA>`.", ""]
+              report("`dev` is green, but the review is not complete.", lines)
               sys.exit(0)
 
-          # ---- Vorspulen ----------------------------------------------------
+          # ---- fast-forward ---------------------------------------------------
           r = subprocess.run(["git", "push", "origin", "%s:refs/heads/test" % dev],
                              capture_output=True, text=True)
           if r.returncode != 0:
-              print("::error::Vorspulen von `test` fehlgeschlagen: %s" % r.stderr.strip()[:400])
+              print("::error::Fast-forwarding `test` failed: %s" % r.stderr.strip()[:400])
               sys.exit(1)
 
-          anzahl = git("rev-list", "--count", "%s..%s" % (basis, dev)) or "?"
-          # Der Satz darf nur aufzaehlen, was WIRKLICH geprueft wurde. Steht die
-          # Durchsicht ab, ist "jede Durchsicht da" eine Behauptung ueber einen
-          # Schritt, den es in diesem Lauf gar nicht gab.
-          text = ("`test` %s auf `%s` (%s Commit(s) aus `dev`). Alle Pflicht-Pruefungen gruen%s."
-                  % ("angelegt" if neu else "vorgespult", dev[:8], anzahl,
-                     ", jede Durchsicht da, kein offener Befund `hoch`" if DURCHSICHT
-                     else "; die Durchsicht wird in diesem Repo NICHT geprueft"))
+          count = git("rev-list", "--count", "%s..%s" % (basis, dev)) or "?"
+          # The sentence may only list what was ACTUALLY checked. If the review
+          # is off, "every review present" is a claim about a step that did not
+          # happen in this run at all.
+          text = ("`test` %s onto `%s` (%s commit(s) from `dev`). All required checks green%s."
+                  % ("created" if creating else "fast-forwarded", dev[:8], count,
+                     ", every review present, no open finding `hoch`" if DURCHSICHT
+                     else "; the review is NOT checked in this repo"))
           print(text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
-              f.write("## test vorgespult\n\n%s\n" % text)
-          issue_zu(text)
+              f.write("## test fast-forwarded\n\n%s\n" % text)
+          close_issue(text)
           PYEOF
