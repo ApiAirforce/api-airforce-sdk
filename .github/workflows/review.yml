@@ -658,6 +658,18 @@ jobs:
           # verhindern soll. `review-push.yml` bremst so seit dem 23.08.;
           # seit der PR-Pflicht ist DIESE Datei der Hauptweg.
           AUFRUF_GRENZE = 900
+          # A STREAM THAT DIES AFTER THIS LONG IS TREATED AS A SIZE REFUSAL.
+          #
+          # Measured on a real run: the whole diff fitted into ONE batch, and that
+          # is what killed it - "Upstream HTTP/2 stream failed" twice, about
+          # fifteen minutes each, then the deadline. `_ist_zu_gross` reads WORDS,
+          # and an abort carries none, because it is not a refusal. So the shrink
+          # fallback built for exactly this never fired, and the transient ladder
+          # sent the same oversized request again.
+          #
+          # The text cannot separate "the network hiccuped" from "that was too much
+          # at once". The elapsed time can.
+          ABRISS_IST_GROESSE = 600  # seconds
           SCHLUSS = time.monotonic() + 34 * 60
 
           def zeit_fuer_neuen_versuch(pause):
@@ -694,6 +706,7 @@ jobs:
               out = None
               while out is None:
                   try:
+                      _versuch_ab = time.monotonic()
                       out = call(payload)
                   except _RelayFehler as e:
                       # HTTP 200, Fehler im Rumpf. Ein Ratenlimit ist fluechtig
@@ -731,6 +744,12 @@ jobs:
                       # shrink loop exists, and nothing ever reaches it.
                       if _ist_zu_gross(str(e)):
                           raise _ZuGross(str(e))
+                      # No words, but it ran long: treat it as a size hint rather than
+                      # retrying the same oversized batch until the deadline eats the run.
+                      _gelaufen = time.monotonic() - _versuch_ab
+                      if _gelaufen > ABRISS_IST_GROESSE:
+                          raise _ZuGross(f"stream failed after {_gelaufen:.0f}s - "
+                                         f"treating as too large: {e!s:.120}")
                       _DAUERHAFT = ("authentication_error", "invalid_api_key",
                                     "invalid_request_error", "permission_error",
                                     "not_found_error", "insufficient_quota")
