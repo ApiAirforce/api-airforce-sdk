@@ -295,6 +295,20 @@ class ReviewGateFixtures(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cannot be split"):
             self.batches["resplit_batch"](parts, 2_777_600)
 
+        original_budget = self.batches["budget_batches"]
+        original_body = "".join(chunk for _, chunk in parts)
+        self.batches["budget_batches"] = lambda _raw, _limit: [
+            [("blob.bin", original_body)],
+            [("blob.bin", "repeated diff header")],
+        ]
+        try:
+            self.assertEqual(
+                (None, []),
+                self.batches["resplit_batch"](parts, 2_777_600),
+            )
+        finally:
+            self.batches["budget_batches"] = original_budget
+
         source = inline_python(REVIEW_WORKFLOW)
         self.assertIn(
             "smaller retry is possible - marking it incomplete", source

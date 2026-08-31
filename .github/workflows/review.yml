@@ -494,7 +494,10 @@ jobs:
               if next_limit >= actual_size:
                   return None, []
               batches = budget_batches(raw_diff, next_limit)
-              if len(batches) <= 1:
+              child_sizes = [sum(len(body) for _, body in batch)
+                             for batch in batches]
+              if (len(batches) <= 1 or not child_sizes
+                      or max(child_sizes) >= actual_size):
                   return None, []
               return next_limit, batches
           # END REVIEW_BATCH_HELPERS
