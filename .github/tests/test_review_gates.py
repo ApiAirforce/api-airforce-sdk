@@ -60,7 +60,7 @@ FIXTURES = {
 }
 
 
-def helper_namespace(path, block_name):
+def helper_namespace(path, block_name, initial=None):
     """Execute one marked pure-helper block from an inline workflow script."""
     lines = path.read_text(encoding="utf-8").splitlines()
     begin = f"# BEGIN {block_name}"
@@ -71,6 +71,7 @@ def helper_namespace(path, block_name):
         raise AssertionError(f"Expected one ordered {block_name} helper block in {path}")
     source = textwrap.dedent("\n".join(lines[starts[0] + 1 : stops[0]]))
     namespace = {"re": re}
+    namespace.update(initial or {})
     exec(compile(source, str(path), "exec"), namespace)
     return namespace
 
@@ -90,6 +91,9 @@ class ReviewGateFixtures(unittest.TestCase):
     def setUpClass(cls):
         cls.reviewer = helper_namespace(REVIEW_WORKFLOW, "REVIEW_MARKER_HELPERS")
         cls.gate = helper_namespace(GATE_WORKFLOW, "GATE_REVIEW_HELPERS")
+        cls.batches = helper_namespace(
+            REVIEW_WORKFLOW, "REVIEW_BATCH_HELPERS", {"MAX_DIFF": 128}
+        )
 
     def test_legacy_incomplete_normal_markers_are_retryable_and_rejected(self):
         names = (
@@ -119,6 +123,20 @@ class ReviewGateFixtures(unittest.TestCase):
             self.gate["review_is_complete"]("## Automated review\nNo findings.", SHA)
         )
 
+    def test_marker_must_occupy_an_exact_line(self):
+        marker = f"<!-- airforce-review {SHA} -->"
+        malformed = (
+            marker + "suffix",
+            "prefix" + marker,
+            f"> {marker}",
+        )
+        for body in malformed:
+            with self.subTest(body=body):
+                self.assertFalse(self.reviewer["review_is_complete"](body, SHA))
+                self.assertFalse(self.gate["review_is_complete"](body, SHA))
+        self.assertTrue(self.reviewer["review_is_complete"](marker + "\r\n", SHA))
+        self.assertTrue(self.gate["review_is_complete"](marker + "\r\n", SHA))
+
     def test_exact_push_marker_is_a_complete_gate_review(self):
         self.assertTrue(
             self.gate["review_is_complete"](FIXTURES["push_complete"], SHA)
@@ -141,13 +159,36 @@ class ReviewGateFixtures(unittest.TestCase):
         findings = [
             {"severity": "high"},
             {"severity": "medium"},
-            {"severity": "HIGH"},
+            {"severity": " High "},
             {"severity": "low"},
             {},
         ]
         self.assertEqual(
             self.reviewer["severity_marker"](findings),
             "<!-- airforce-schwere hoch=2 mittel=2 -->",
+        )
+
+    def test_unknown_severity_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "unsupported review severity"):
+            self.reviewer["normalize_severity"]("critical")
+        with self.assertRaisesRegex(ValueError, "unsupported review severity"):
+            self.reviewer["severity_marker"]([{"severity": "critical"}])
+
+        findings, invalid = self.reviewer["normalize_findings"](
+            [{"path": "review.yml", "severity": "critical"}]
+        )
+        self.assertEqual(findings, [])
+        self.assertTrue(invalid)
+
+    def test_finding_severity_is_normalized_before_counting(self):
+        findings, invalid = self.reviewer["normalize_findings"](
+            [{"path": "review.yml", "severity": " High ", "line": 1}]
+        )
+        self.assertFalse(invalid)
+        self.assertEqual(findings[0]["severity"], "high")
+        self.assertEqual(
+            self.reviewer["severity_marker"](findings),
+            "<!-- airforce-schwere hoch=1 mittel=0 -->",
         )
 
     def test_english_high_is_counted(self):
@@ -178,6 +219,25 @@ class ReviewGateFixtures(unittest.TestCase):
     def test_sdk_review_gate_is_enabled(self):
         workflow = GATE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("DURCHSICHT_NOETIG: 'ja'", workflow)
+
+    def test_short_no_hunk_diff_is_preserved_verbatim(self):
+        body = "diff --git a/old.txt b/new.txt\nsimilarity index 100%\n"
+        self.assertEqual(
+            self.batches["_split_file"]("new.txt", body, len(body)),
+            [("new.txt", body)],
+        )
+
+    def test_oversized_no_hunk_diff_fails_closed(self):
+        body = "diff --git a/old.txt b/new.txt\n" + ("metadata\n" * 40)
+        with self.assertRaisesRegex(RuntimeError, "cannot be split"):
+            self.batches["_split_file"]("new.txt", body, 64)
+        with self.assertRaisesRegex(RuntimeError, "cannot be split"):
+            self.batches["budget_batches"](body, 64)
+
+    def test_oversized_unknown_diff_fails_closed(self):
+        body = "unexpected diff payload\n" * 20
+        with self.assertRaisesRegex(RuntimeError, "cannot be split"):
+            self.batches["budget_batches"](body, 64)
 
     def test_changed_inline_python_scripts_compile(self):
         for workflow in (REVIEW_WORKFLOW, GATE_WORKFLOW):

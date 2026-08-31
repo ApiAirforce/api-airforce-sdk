@@ -101,11 +101,17 @@ jobs:
           print(f"context={CONTEXT} max_out={MAX_OUT} -> {MAX_DIFF} chars per batch",
                 file=sys.stderr)
 
+          # BEGIN REVIEW_BATCH_HELPERS
           _AT = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
           DATA_FILE = re.compile(
               r"(^|/)(locales/[^/]+\.json|package-lock\.json|[^/]*\.lock"
               r"|[^/]*\.generated\.[a-z]+|[^/]*snapshot[^/]*\.json)$")
+
+
+          class _UnsplittableDiff(RuntimeError):
+              """A diff part cannot be divided without silently losing content."""
+
 
           def _split_file(path, body, limit):
               """A single file bigger than one batch, cut at hunk boundaries.
@@ -122,7 +128,15 @@ jobs:
                       kopf, rest = zeilen[:i], zeilen[i:]
                       break
               else:
-                  return [(path, body[:limit])]  # no hunk (a pure rename): indivisible
+                  # A large diff without hunk boundaries cannot be split while
+                  # preserving usable line positions. The old body[:limit] fallback
+                  # silently discarded the suffix and still allowed a complete marker.
+                  # Fail before posting any marker instead.
+                  if len(body) > limit:
+                      raise _UnsplittableDiff(
+                          f"{path or '(unknown diff)'} is {len(body)} characters but "
+                          f"has no hunk boundary and cannot be split at {limit}")
+                  return [(path, body)]
               kopftext = "".join(kopf)
               budget = max(1, limit - len(kopftext))
 
@@ -230,7 +244,11 @@ jobs:
                   used += len(h)
               if cur:
                   teile.append((path, kopftext + "".join(cur)))
-              return teile or [(path, body[:limit])]
+              if not teile:
+                  raise _UnsplittableDiff(
+                      f"{path or '(unknown diff)'} could not be split without "
+                      "discarding content")
+              return teile
 
 
           def budget_batches(raw_diff, limit=MAX_DIFF):
@@ -261,7 +279,7 @@ jobs:
               if cur:
                   chunks.append((path, "".join(cur)))
               if not chunks:
-                  return [[(None, raw_diff[:limit])]] if raw_diff.strip() else []
+                  return []
               chunks.sort(key=lambda c: 1 if DATA_FILE.search(c[0] or "") else 0)
               flach = []
               for p, body in chunks:
@@ -276,6 +294,7 @@ jobs:
               if cur:
                   stapel.append(cur)
               return stapel
+          # END REVIEW_BATCH_HELPERS
 
 
           class _ZuGross(Exception):
@@ -335,6 +354,11 @@ jobs:
               return f"<!-- airforce-incomplete-review {sha} -->"
 
 
+          def has_exact_marker_line(body, marker):
+              return bool(re.search(
+                  rf"^{re.escape(marker)}\r?$", body or "", re.M))
+
+
           def legacy_review_incomplete(body):
               """Recognise incomplete reviews posted before they had their own marker."""
               notices = (
@@ -351,9 +375,9 @@ jobs:
               text = body or ""
               if legacy_review_incomplete(text):
                   return False
-              if incomplete_review_marker(sha) in text:
+              if has_exact_marker_line(text, incomplete_review_marker(sha)):
                   return False
-              return complete_review_marker(sha) in text
+              return has_exact_marker_line(text, complete_review_marker(sha))
 
 
           def is_complete_bot_review(review, sha):
@@ -363,9 +387,32 @@ jobs:
                       and review_is_complete(review.get("body") or "", sha))
 
 
+          def normalize_severity(value):
+              level = str(value or "medium").strip().casefold()
+              if level not in {"high", "medium", "low"}:
+                  raise ValueError(f"unsupported review severity: {value!r}")
+              return level
+
+
+          def normalize_findings(raw_findings):
+              findings, invalid = [], False
+              for finding in raw_findings:
+                  if not isinstance(finding, dict) or not finding.get("path"):
+                      invalid = True
+                      continue
+                  try:
+                      severity = normalize_severity(finding.get("severity"))
+                  except ValueError:
+                      invalid = True
+                      continue
+                  finding = dict(finding)
+                  finding["severity"] = severity
+                  findings.append(finding)
+              return findings, invalid
+
+
           def severity_marker(findings):
-              levels = [str(f.get("severity") or "medium").casefold()
-                        for f in findings]
+              levels = [normalize_severity(f.get("severity")) for f in findings]
               high = sum(level == "high" for level in levels)
               medium = sum(level == "medium" for level in levels)
               return f"<!-- airforce-schwere hoch={high} mittel={medium} -->"
@@ -907,12 +954,12 @@ jobs:
                   verdict, parse_kaputt = {}, True
               summary = verdict.get("summary") or text.strip()[:2000]
               # A finding silently dropped is not a clean review either: a non-empty
-              # list of nulls or objects without `path` passes the type check and the
-              # comprehension then discards them without a word.
+              # list with malformed objects can pass the outer type check. Invalid
+              # paths or severity labels must make the whole review incomplete rather
+              # than disappearing or being encoded as zero high findings.
               _roh = verdict.get("findings") or []
-              findings = [f for f in _roh if isinstance(f, dict) and f.get("path")]
-              if len(findings) != len(_roh):
-                  parse_kaputt = True
+              findings, invalid_findings = normalize_findings(_roh)
+              parse_kaputt = parse_kaputt or invalid_findings
               return summary, findings, parse_kaputt
 
           # EVERY BATCH GETS ITS OWN PASS, AND EACH CARRIES ITS OWN LIMIT.

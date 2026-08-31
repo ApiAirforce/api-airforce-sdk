@@ -445,6 +445,11 @@ jobs:
               )
 
 
+          def has_exact_marker_line(body, marker):
+              return bool(re.search(
+                  rf"^{re.escape(marker)}\r?$", body or "", re.M))
+
+
           def legacy_review_incomplete(body):
               """Recognise incomplete reviews that still carried a complete marker."""
               notices = (
@@ -464,9 +469,11 @@ jobs:
               text = body or ""
               if legacy_review_incomplete(text):
                   return False
-              if any(marker in text for marker in incomplete_review_markers(sha)):
+              if any(has_exact_marker_line(text, marker)
+                     for marker in incomplete_review_markers(sha)):
                   return False
-              return any(marker in text for marker in complete_review_markers(sha))
+              return any(has_exact_marker_line(text, marker)
+                         for marker in complete_review_markers(sha))
 
 
           def is_complete_bot_review(review, sha):
@@ -483,8 +490,7 @@ jobs:
                   text, re.M)
               if machine:
                   return int(machine[-1][0])
-              # Legacy reviews have no machine marker. Public reviews use
-              # `high`; internal reviews use `hoch`.
+              # Legacy review tables may spell severity as either `high` or `hoch`.
               return len(re.findall(r"\|\s*(?:high|hoch)\s*\|", text, re.I))
           # END GATE_REVIEW_HELPERS
 
