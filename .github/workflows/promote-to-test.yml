@@ -428,6 +428,7 @@ jobs:
 
           # BEGIN GATE_REVIEW_HELPERS
           REVIEW_BOT = "github-actions[bot]"
+          SUBMITTED_REVIEW_STATES = {"COMMENTED", "APPROVED", "CHANGES_REQUESTED"}
 
 
           def complete_review_markers(sha):
@@ -476,22 +477,61 @@ jobs:
                          for marker in complete_review_markers(sha))
 
 
-          def is_complete_bot_review(review, sha):
-              user = review.get("user") or {}
+          def is_complete_bot_entry(entry, sha):
+              user = entry.get("user") or {}
               return (user.get("type") == "Bot"
                       and user.get("login") == REVIEW_BOT
-                      and review_is_complete(review.get("body") or "", sha))
+                      and review_is_complete(entry.get("body") or "", sha))
+
+
+          def is_complete_bot_comment(comment, sha):
+              return is_complete_bot_entry(comment, sha)
+
+
+          def is_complete_bot_review(review, sha):
+              return (str(review.get("state") or "").upper()
+                      in SUBMITTED_REVIEW_STATES
+                      and is_complete_bot_entry(review, sha))
+
+
+          def flatten_paginated_lists(pages):
+              if not isinstance(pages, list):
+                  raise ValueError("paginated GitHub response is not a page list")
+              items = []
+              for page in pages:
+                  if not isinstance(page, list):
+                      raise ValueError("paginated GitHub response contains a non-list page")
+                  items.extend(page)
+              return items
+
+
+          def paginated_gh(path):
+              pages = gh_json(path, "--paginate", "--slurp", loud=True)
+              if pages is None:
+                  raise RuntimeError(
+                      f"promotion cannot read every GitHub page for {path}")
+              return flatten_paginated_lists(pages)
+
+
+          def required_gh_json(path):
+              value = gh_json(path, loud=True)
+              if value is None:
+                  raise RuntimeError(
+                      f"promotion cannot read required GitHub source {path}")
+              return value
 
 
           def high_finding_count(body):
               text = body or ""
+              visible = len(re.findall(
+                  r"\|\s*(?:high|hoch)\s*\|", text, re.I))
               machine = re.findall(
                   r"^<!-- airforce-schwere hoch=(\d+) mittel=(\d+) -->$",
                   text, re.M)
               if machine:
-                  return int(machine[-1][0])
+                  return max(int(machine[-1][0]), visible)
               # Legacy review tables may spell severity as either `high` or `hoch`.
-              return len(re.findall(r"\|\s*(?:high|hoch)\s*\|", text, re.I))
+              return visible
           # END GATE_REVIEW_HELPERS
 
           if not DURCHSICHT:
@@ -509,7 +549,8 @@ jobs:
                       continue
                   parents = (git("rev-list", "--parents", "-1", sha) or "").split()[1:]
                   if len(parents) > 1:
-                      pulls = gh_json("repos/%s/commits/%s/pulls" % (REPO, sha)) or []
+                      pulls = paginated_gh(
+                          "repos/%s/commits/%s/pulls?per_page=100" % (REPO, sha))
                       if any(p.get("merged_at") and p.get("merge_commit_sha") == sha
                              for p in pulls):
                           continue
@@ -538,20 +579,20 @@ jobs:
                   # type == "Bot". A human cannot set `type` to Bot.
                   # NOT affected: `#erledigt` / `#fehlalarm`. Those run over a
                   # separate regex on `comm` and are supposed to come from humans.
-                  def _review(k):
-                      return is_complete_bot_review(k, sha)
-
-                  comm = gh_json("repos/%s/commits/%s/comments?per_page=100" % (REPO, sha)) or []
-                  found = [c for c in comm if _review(c)]
+                  comm = paginated_gh(
+                      "repos/%s/commits/%s/comments?per_page=100" % (REPO, sha))
+                  found = [c for c in comm if is_complete_bot_comment(c, sha)]
                   # PR reviews carry `submitted_at` instead of `created_at` -
                   # without aligning them, `max(...)` below picks the wrong one
                   # as newest and reads the findings of an outdated version.
-                  for p in (gh_json("repos/%s/commits/%s/pulls" % (REPO, sha)) or []):
+                  for p in paginated_gh(
+                          "repos/%s/commits/%s/pulls?per_page=100" % (REPO, sha)):
                       nr = p.get("number")
                       if not nr:
                           continue
-                      for r in (gh_json("repos/%s/pulls/%s/reviews?per_page=100"
-                                        % (REPO, nr)) or []):
+                      for r in paginated_gh(
+                              "repos/%s/pulls/%s/reviews?per_page=100"
+                              % (REPO, nr)):
                           # ONLY A REVIEW AT EXACTLY THIS COMMIT.
                           # Finding `hoch` from the review, 2026-08-25, and it
                           # hits: a PR carries several commits, and each of its
@@ -560,15 +601,16 @@ jobs:
                           # slipped through unchecked - exactly the hole this
                           # gate is meant to close. `commit_id` says which state
                           # the review saw.
-                          if _review(r) and r.get("commit_id") == sha:
+                          if (is_complete_bot_review(r, sha)
+                                  and r.get("commit_id") == sha):
                               found.append({"body": r.get("body") or "",
                                             "created_at": r.get("submitted_at") or "",
                                             "html_url": r.get("html_url") or ""})
                       # Answers (`#erledigt` / `#fehlalarm`) stand at the PR,
                       # not at the commit - otherwise an answered finding keeps
                       # counting as open.
-                      comm += (gh_json("repos/%s/issues/%s/comments?per_page=100"
-                                       % (REPO, nr)) or [])
+                      comm += paginated_gh(
+                          "repos/%s/issues/%s/comments?per_page=100" % (REPO, nr))
                   if not found:
                       without.append((sha, subject))
                       continue
@@ -611,14 +653,9 @@ jobs:
                           if not login:
                               return False
                           if login not in _rights:
-                              d = gh_json("repos/%s/collaborators/%s/permission"
-                                          % (REPO, login))
-                              if d is None:
-                                  # The lookup itself failed. Do not guess in
-                                  # either direction - refuse, and say so
-                                  # where someone will read it.
-                                  print("::warning::cannot verify write access for "
-                                        "%s - answer not counted" % login)
+                              d = required_gh_json(
+                                  "repos/%s/collaborators/%s/permission"
+                                  % (REPO, login))
                               _rights[login] = (d or {}).get("permission") or ""
                           return _rights[login] in ("admin", "write")
 

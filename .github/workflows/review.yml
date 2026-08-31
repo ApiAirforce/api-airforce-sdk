@@ -107,10 +107,206 @@ jobs:
           DATA_FILE = re.compile(
               r"(^|/)(locales/[^/]+\.json|package-lock\.json|[^/]*\.lock"
               r"|[^/]*\.generated\.[a-z]+|[^/]*snapshot[^/]*\.json)$")
+          UNKNOWN_PATH = "(unknown diff payload)"
 
 
           class _UnsplittableDiff(RuntimeError):
               """A diff part cannot be divided without silently losing content."""
+
+
+          def _git_c_unquote(token):
+              """Decode one complete Git C-quoted path token."""
+              if not token.startswith('"'):
+                  return token
+              if len(token) < 2 or not token.endswith('"'):
+                  return None
+              data, i, body = bytearray(), 0, token[1:-1]
+              escapes = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11,
+                         "f": 12, "r": 13, '"': 34, "\\": 92}
+              while i < len(body):
+                  char = body[i]
+                  if char != "\\":
+                      data.extend(char.encode("utf-8", "surrogateescape"))
+                      i += 1
+                      continue
+                  i += 1
+                  if i >= len(body):
+                      return None
+                  char = body[i]
+                  if char in escapes:
+                      data.append(escapes[char])
+                      i += 1
+                  elif char in "01234567":
+                      end = i + 1
+                      while end < min(i + 3, len(body)) and body[end] in "01234567":
+                          end += 1
+                      data.append(int(body[i:end], 8))
+                      i = end
+                  else:
+                      return None
+              return data.decode("utf-8", "surrogateescape")
+
+
+          def _git_path_value(raw):
+              """Read one Git metadata pathname without splitting ordinary spaces."""
+              token = raw.rstrip("\r\n")
+              # An unquoted tab can only introduce the optional timestamp field;
+              # literal tabs are C-quoted by Git.
+              if not token.startswith('"'):
+                  token = token.split("\t", 1)[0]
+              value = _git_c_unquote(token)
+              if not value:
+                  raise ValueError(f"invalid Git path token: {raw!r}")
+              return value
+
+
+          def diff_marker_path(line, prefix):
+              """Decode an authoritative ---/+++ marker and remove a/ or b/."""
+              if not (line.startswith("--- ") or line.startswith("+++ ")):
+                  raise ValueError(f"not a Git file marker: {line!r}")
+              value = _git_path_value(line[4:])
+              if value == "/dev/null":
+                  return None
+              if not value.startswith(prefix):
+                  raise ValueError(
+                      f"Git file marker does not start with {prefix!r}: {line!r}")
+              return value[len(prefix):]
+
+
+          def diff_target_path(body):
+              """Derive the target path only from metadata before the first hunk."""
+              source_seen, source = False, None
+              rename_target = copy_target = None
+              for line in body.splitlines(keepends=True):
+                  if line.startswith("@@"):
+                      break
+                  if line.startswith("--- "):
+                      source_seen = True
+                      source = diff_marker_path(line, "a/")
+                  elif line.startswith("+++ "):
+                      target = diff_marker_path(line, "b/")
+                      if target is not None:
+                          return target
+                      return source if source_seen and source is not None else UNKNOWN_PATH
+                  elif line.startswith("rename to "):
+                      rename_target = _git_path_value(line[len("rename to "):])
+                  elif line.startswith("copy to "):
+                      copy_target = _git_path_value(line[len("copy to "):])
+              return rename_target or copy_target or UNKNOWN_PATH
+
+
+          def diff_chunks(raw_diff):
+              """Group complete file diffs before deriving any pathname."""
+              if not raw_diff.strip():
+                  return []
+              bodies, current = [], []
+              for line in raw_diff.splitlines(keepends=True):
+                  if line.startswith("diff --git ") and current:
+                      bodies.append("".join(current))
+                      current = []
+                  current.append(line)
+              if current:
+                  bodies.append("".join(current))
+              return [(diff_target_path(body), body) for body in bodies]
+
+
+          def dropped_paths(parts):
+              """Keep an explicit label even when a batch path is unknown."""
+              return [path or UNKNOWN_PATH for path, _ in parts]
+
+
+          def changed_path_manifest(raw_diff):
+              """Return each derived target path once, in diff order."""
+              return list(dict.fromkeys(path for path, _ in diff_chunks(raw_diff)))
+
+
+          def batch_paths(parts):
+              """Return each path represented by one batch once."""
+              return list(dict.fromkeys(path or UNKNOWN_PATH for path, _ in parts))
+
+
+          def body_only_findings(findings):
+              """Copy global findings without pretending they have diff positions."""
+              result = []
+              for finding in findings:
+                  item = dict(finding)
+                  item.pop("line", None)
+                  result.append(item)
+              return result
+
+
+          def make_batch_report(batch_id, paths, summary, facts, findings):
+              """Keep the structured evidence required by the global pass."""
+              return {
+                  "batch_id": batch_id,
+                  "paths": list(paths),
+                  "summary": summary,
+                  "cross_batch_facts": list(facts),
+                  "findings": list(findings),
+              }
+
+
+          def reports_cover_manifest(changed_paths, reports):
+              """Require successful reports to cover exactly the changed manifest."""
+              reported = {
+                  path
+                  for report in reports
+                  for path in report.get("paths", [])
+              }
+              return bool(reports) and reported == set(changed_paths)
+
+
+          def reconciliation_text(changed_paths, reports):
+              """Build one indivisible final request from every structured report."""
+              envelope = {
+                  "changed_paths": list(changed_paths),
+                  "batch_reports": list(reports),
+              }
+              return (
+                  "Perform the mandatory global reconciliation. The JSON envelope "
+                  "contains the complete changed-path manifest and every successful "
+                  "batch report. Do not omit a report or path.\n\n"
+                  + json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+              )
+
+
+          def _exact_coverage(actual, expected):
+              """Accept each expected unique string exactly once, in any order."""
+              return (
+                  isinstance(actual, list)
+                  and all(isinstance(item, str) for item in actual)
+                  and len(actual) == len(expected)
+                  and set(actual) == set(expected)
+              )
+
+
+          def parse_reconciliation_response(text, expected_batches, expected_paths):
+              """Parse the final body-only review and prove exact input coverage."""
+              match = re.search(r"\{.*\}", text, re.S)
+              broken = False
+              try:
+                  verdict = json.loads(match.group(0)) if match else {}
+              except ValueError:
+                  verdict = {}
+              if (not isinstance(verdict, dict) or not verdict
+                      or verdict.get("verdict") not in ("lgtm", "findings")
+                      or not isinstance(verdict.get("findings", []), list)
+                      or not isinstance(verdict.get("summary", ""), str)
+                      or (verdict.get("verdict") == "findings"
+                          and not verdict.get("findings"))):
+                  verdict, broken = {}, True
+              raw_findings = verdict.get("findings") or []
+              findings = [finding for finding in raw_findings
+                          if isinstance(finding, dict) and finding.get("path")]
+              if len(findings) != len(raw_findings):
+                  broken = True
+              if (not _exact_coverage(
+                      verdict.get("covered_batches"), expected_batches)
+                      or not _exact_coverage(
+                          verdict.get("covered_paths"), expected_paths)):
+                  broken = True
+              summary = verdict.get("summary") or text.strip()[:2000]
+              return summary, findings, broken
 
 
           def _split_file(path, body, limit):
@@ -267,17 +463,7 @@ jobs:
               The order stays: code first, data files last. If time does run out,
               what is missing is a translation file rather than Rust.
               """
-              chunks, cur, path = [], [], None
-              for line in raw_diff.splitlines(keepends=True):
-                  if line.startswith("diff --git "):
-                      if cur:
-                          chunks.append((path, "".join(cur)))
-                      cur = [line]
-                      path = line.rstrip("\n").split(" b/")[-1]
-                  else:
-                      cur.append(line)
-              if cur:
-                  chunks.append((path, "".join(cur)))
+              chunks = diff_chunks(raw_diff)
               if not chunks:
                   return []
               chunks.sort(key=lambda c: 1 if DATA_FILE.search(c[0] or "") else 0)
@@ -342,6 +528,7 @@ jobs:
 
           # BEGIN REVIEW_MARKER_HELPERS
           REVIEW_BOT = "github-actions[bot]"
+          SUBMITTED_REVIEW_STATES = {"COMMENTED", "APPROVED", "CHANGES_REQUESTED"}
 
 
           def complete_review_marker(sha):
@@ -384,7 +571,20 @@ jobs:
               user = review.get("user") or {}
               return (user.get("type") == "Bot"
                       and user.get("login") == REVIEW_BOT
+                      and str(review.get("state") or "").upper()
+                          in SUBMITTED_REVIEW_STATES
                       and review_is_complete(review.get("body") or "", sha))
+
+
+          def flatten_paginated_lists(pages):
+              if not isinstance(pages, list):
+                  raise ValueError("paginated GitHub response is not a page list")
+              items = []
+              for page in pages:
+                  if not isinstance(page, list):
+                      raise ValueError("paginated GitHub response contains a non-list page")
+                  items.extend(page)
+              return items
 
 
           def normalize_severity(value):
@@ -416,6 +616,10 @@ jobs:
               high = sum(level == "high" for level in levels)
               medium = sum(level == "medium" for level in levels)
               return f"<!-- airforce-schwere hoch={high} mittel={medium} -->"
+
+          def gh_paginated_list(path):
+              return flatten_paginated_lists(
+                  gh(path, "--paginate", "--slurp"))
           # END REVIEW_MARKER_HELPERS
 
           pr = gh(f"repos/{REPO}/pulls/{PR}")
@@ -423,7 +627,8 @@ jobs:
 
           # Idempotence: only a complete review suppresses a re-run. An incomplete
           # review must remain retryable, and only the workflow bot can satisfy it.
-          for rv in gh(f"repos/{REPO}/pulls/{PR}/reviews?per_page=100"):
+          for rv in gh_paginated_list(
+                  f"repos/{REPO}/pulls/{PR}/reviews?per_page=100"):
               if is_complete_bot_review(rv, head):
                   print(f"Review for {head[:7]} already posted - nothing to do.")
                   sys.exit(0)
@@ -438,6 +643,10 @@ jobs:
           if not stapel:
               print("Empty diff - nothing to review.")
               sys.exit(0)
+          manifest = changed_path_manifest(diff)
+          if not manifest:
+              print("The diff has no reviewable changed-path manifest.", file=sys.stderr)
+              sys.exit(1)
           print(f"diff split into {len(stapel)} batch(es)", file=sys.stderr)
 
           # Public repository -> English (community-facing); internal -> German.
@@ -454,17 +663,40 @@ jobs:
               "say so briefly. Never invent line numbers: only reference lines that "
               f"appear in the diff. Write all prose in {lang}. "
               'Answer with STRICT JSON only, no code fences: {"verdict":"lgtm"|"findings",'
-              '"summary":"...","findings":[{"path":"...","line":123,'
+              '"summary":"...","cross_batch_facts":["..."],'
+              '"findings":[{"path":"...","line":123,'
               '"severity":"high"|"medium"|"low","note":"..."}]} '
               '- "line" must be a line number in the NEW version of the file, taken from '
-              "the diff hunk headers. Omit findings you are not confident about."
+              "the diff hunk headers. Record every changed API, schema, locale, billing, "
+              "permission, or configuration contract that another batch may need to "
+              "verify in cross_batch_facts, even when it is not locally defective. "
+              "Omit findings you are not confident about."
+          )
+          reconciliation_system = (
+              "You are the mandatory final reconciliation pass for a batched code review. "
+              "The user message contains the complete changed-path manifest and every "
+              "structured batch report. Find only additional defects that become visible "
+              "across batches, especially mismatched APIs or schemas, missing locale "
+              "companions, billing inconsistencies, permission gaps, and configuration "
+              "contracts. Do not discard or rewrite local findings. "
+              f"Write the summary and finding notes in {lang}. "
+              'Answer with STRICT JSON only: {"verdict":"lgtm"|"findings",'
+              '"summary":"...","findings":[{"path":"...",'
+              '"severity":"high"|"medium"|"low","note":"..."}],'
+              '"covered_batches":["batch-1"],"covered_paths":["path"]}. '
+              "This pass has no raw diff hunks, so its findings are review-body-only: "
+              "never include or guess line numbers. Copy every batch id and every changed "
+              "path from the input exactly once."
           )
           def stapel_text(nr, gesamt, teile):
               """The user message for one batch."""
               kopf = f"PR #{PR} - {pr.get('title','')!s}"
               if gesamt > 1:
-                  kopf += (f"\n\nThis is part {nr} of {gesamt} of the diff. Judge only"
-                           " what is below; the other parts are reviewed separately.")
+                  kopf += (f"\n\nThis is batch {nr} of {gesamt}. Review the raw diff "
+                           "below and record every relation another batch must verify. "
+                           "A mandatory final pass will reconcile all reports.")
+              kopf += ("\n\nComplete changed-path manifest:\n"
+                       + json.dumps(manifest, ensure_ascii=False))
               return kopf + "\n\n" + "".join(b for _, b in teile)
 
           class _RelayFehler(Exception):
@@ -785,8 +1017,9 @@ jobs:
                   return True
               print(f"keine Restzeit mehr fuer {was} - Schluss", file=sys.stderr)
               sys.exit(1)
-          def durchsicht(user_text):
-              """One pass over one batch. Returns (summary, findings, kaputt).
+          def durchsicht(user_text, system_text=system, expected_batches=None,
+                         expected_paths=None):
+              """Run one local batch or the final global reconciliation.
           
               The retry ladder above stays OUTSIDE on purpose. It carries
               `SCHLUSS`, the wall-clock deadline, and pulling that in here would
@@ -796,7 +1029,7 @@ jobs:
               version of this change before it was caught.
               """
               payload = {"model": MODEL,
-                         "messages": [{"role": "system", "content": system},
+                         "messages": [{"role": "system", "content": system_text},
                                       {"role": "user", "content": user_text}],
                          "max_completion_tokens": MAX_OUT,
                          "reasoning_effort": "max"}
@@ -932,6 +1165,14 @@ jobs:
               usage = out.get("usage", {})
               print(f"model={out.get('model')} tokens: {usage}")
 
+              if expected_batches is not None or expected_paths is not None:
+                  if expected_batches is None or expected_paths is None:
+                      return text.strip()[:2000], [], [], True
+                  summary, raw_findings, broken = parse_reconciliation_response(
+                      text, expected_batches, expected_paths)
+                  findings, invalid_findings = normalize_findings(raw_findings)
+                  return summary, findings, [], broken or invalid_findings
+
               m = re.search(r"\{.*\}", text, re.S)
               # AN UNREADABLE ANSWER IS NOT A CLEAN REVIEW.
               #
@@ -960,7 +1201,16 @@ jobs:
               _roh = verdict.get("findings") or []
               findings, invalid_findings = normalize_findings(_roh)
               parse_kaputt = parse_kaputt or invalid_findings
-              return summary, findings, parse_kaputt
+              if "cross_batch_facts" not in verdict:
+                  parse_kaputt = True
+              raw_facts = verdict.get("cross_batch_facts", [])
+              if not isinstance(raw_facts, list):
+                  raw_facts, parse_kaputt = [], True
+              facts = [fact for fact in raw_facts
+                       if isinstance(fact, str) and fact.strip()]
+              if len(facts) != len(raw_facts):
+                  facts, parse_kaputt = [], True
+              return summary, findings, facts, parse_kaputt
 
           # EVERY BATCH GETS ITS OWN PASS, AND EACH CARRIES ITS OWN LIMIT.
           #
@@ -978,6 +1228,7 @@ jobs:
           offen = [(MAX_DIFF, t) for t in budget_batches(diff, MAX_DIFF)]
           gesamt = len(offen)
           teil_zusammenfassungen, findings, dropped = [], [], []
+          batch_reports = []
           parse_kaputt = False
           nr = 0
           erster_aufruf = True
@@ -985,11 +1236,11 @@ jobs:
               b_grenze, teile = offen.pop(0)
               nr += 1
               if not erster_aufruf and not zeit_fuer_neuen_versuch(0):
-                  dropped += [p for p, _ in teile if p]
+                  dropped += dropped_paths(teile)
                   continue
               erster_aufruf = False
               try:
-                  s, f, k = durchsicht(stapel_text(nr, gesamt, teile))
+                  s, f, facts, k = durchsicht(stapel_text(nr, gesamt, teile))
               except _ZuGross as e:
                   if b_grenze <= 40_000:
                       print("upstream refuses even the smallest batch", file=sys.stderr)
@@ -1007,6 +1258,49 @@ jobs:
               if s:
                   teil_zusammenfassungen.append(s if gesamt == 1 else f"({nr}/{gesamt}) {s}")
               findings += f
+              batch_id = f"batch-{len(batch_reports) + 1}"
+              batch_reports.append(make_batch_report(
+                  batch_id, batch_paths(teile), s, facts, f))
+
+          # Local calls cannot prove relationships that cross a batch boundary. The
+          # final request is deliberately indivisible; any size, deadline, transport,
+          # parse, or coverage failure keeps the review incomplete.
+          reconciliation_failed = not reports_cover_manifest(manifest, batch_reports)
+          if reconciliation_failed:
+              print("Batch reports do not cover the complete changed-path manifest.",
+                    file=sys.stderr)
+          if (len(batch_reports) > 1 and not parse_kaputt and not dropped
+                  and not reconciliation_failed):
+              expected_batch_ids = [report["batch_id"] for report in batch_reports]
+              reconciliation_prompt = reconciliation_text(manifest, batch_reports)
+              if len(reconciliation_prompt) > MAX_DIFF:
+                  print("Global reconciliation input exceeds the safe request budget.",
+                        file=sys.stderr)
+                  reconciliation_failed = True
+              elif not zeit_fuer_neuen_versuch(0):
+                  print("No deadline budget remains for global reconciliation.",
+                        file=sys.stderr)
+                  reconciliation_failed = True
+              else:
+                  try:
+                      global_summary, global_findings, _, broken = durchsicht(
+                          reconciliation_prompt,
+                          system_text=reconciliation_system,
+                          expected_batches=expected_batch_ids,
+                          expected_paths=manifest)
+                  except _ZuGross as error:
+                      print(f"Global reconciliation was refused for size: {error!s:.160}",
+                            file=sys.stderr)
+                      reconciliation_failed = True
+                  except SystemExit as error:
+                      print(f"Global reconciliation call failed with exit {error.code}.",
+                            file=sys.stderr)
+                      reconciliation_failed = True
+                  else:
+                      reconciliation_failed = broken
+                      if global_summary and not broken:
+                          teil_zusammenfassungen.append(f"(global) {global_summary}")
+                      findings += body_only_findings(global_findings)
           summary = " ".join(teil_zusammenfassungen).strip() or "(no summary)"
 
           sev_de = {"high": "hoch", "medium": "mittel", "low": "niedrig"}
@@ -1043,7 +1337,11 @@ jobs:
                   if not english else
                   "> **The model answer was not usable JSON.** Structured findings may "
                   "be missing. The run fails for that reason.")
-          incomplete = parse_kaputt or bool(dropped)
+          if reconciliation_failed:
+              lines.append(
+                  "> **The mandatory global reconciliation did not complete with exact "
+                  "batch and path coverage.** This review is incomplete and the run fails.")
+          incomplete = parse_kaputt or bool(dropped) or reconciliation_failed
           marker = (incomplete_review_marker(head) if incomplete
                     else complete_review_marker(head))
           lines += ["", f"_{MODEL} · api.airforce_", severity_marker(findings), marker]
@@ -1086,7 +1384,7 @@ jobs:
           # were never sent. A run that found nothing and a run that did not look
           # were indistinguishable from outside - which is the shape the batching
           # rework exists to remove.
-          if parse_kaputt or dropped:
+          if parse_kaputt or dropped or reconciliation_failed:
               if dropped:
                   print(f"{len(dropped)} file(s) never reviewed - the wall-clock cap "
                         "was reached. Failing so an incomplete review does not read "
@@ -1094,5 +1392,8 @@ jobs:
               if parse_kaputt:
                   print("Model answer was not parsable JSON - the review is posted "
                         "but incomplete.", file=sys.stderr)
+              if reconciliation_failed:
+                  print("Global reconciliation did not complete with exact coverage - "
+                        "the review is posted but incomplete.", file=sys.stderr)
               sys.exit(1)
           PYEOF

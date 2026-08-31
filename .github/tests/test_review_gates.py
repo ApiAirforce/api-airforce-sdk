@@ -1,6 +1,7 @@
 """Regression fixtures for the inline review and promotion-gate helpers."""
 
 from pathlib import Path
+import json
 import re
 import textwrap
 import unittest
@@ -92,7 +93,9 @@ class ReviewGateFixtures(unittest.TestCase):
         cls.reviewer = helper_namespace(REVIEW_WORKFLOW, "REVIEW_MARKER_HELPERS")
         cls.gate = helper_namespace(GATE_WORKFLOW, "GATE_REVIEW_HELPERS")
         cls.batches = helper_namespace(
-            REVIEW_WORKFLOW, "REVIEW_BATCH_HELPERS", {"MAX_DIFF": 128}
+            REVIEW_WORKFLOW,
+            "REVIEW_BATCH_HELPERS",
+            {"MAX_DIFF": 128, "json": json},
         )
 
     def test_legacy_incomplete_normal_markers_are_retryable_and_rejected(self):
@@ -145,15 +148,41 @@ class ReviewGateFixtures(unittest.TestCase):
     def test_only_the_workflow_bot_can_satisfy_dedup_and_gate(self):
         bot_review = {
             "body": FIXTURES["complete"],
+            "state": "COMMENTED",
             "user": {"type": "Bot", "login": "github-actions[bot]"},
         }
         human_review = {
             "body": FIXTURES["complete"],
+            "state": "COMMENTED",
             "user": {"type": "User", "login": "reviewer"},
         }
         for helpers in (self.reviewer, self.gate):
             self.assertTrue(helpers["is_complete_bot_review"](bot_review, SHA))
             self.assertFalse(helpers["is_complete_bot_review"](human_review, SHA))
+
+        bot_comment = {key: value for key, value in bot_review.items()
+                       if key != "state"}
+        self.assertTrue(self.gate["is_complete_bot_comment"](bot_comment, SHA))
+
+    def test_only_submitted_pr_review_states_satisfy_dedup_and_gate(self):
+        review = {
+            "body": FIXTURES["complete"],
+            "user": {"type": "Bot", "login": "github-actions[bot]"},
+        }
+        for state in ("PENDING", "DISMISSED", ""):
+            review["state"] = state
+            with self.subTest(state=state):
+                self.assertFalse(
+                    self.reviewer["is_complete_bot_review"](review, SHA)
+                )
+                self.assertFalse(self.gate["is_complete_bot_review"](review, SHA))
+        for state in ("COMMENTED", "APPROVED", "CHANGES_REQUESTED"):
+            review["state"] = state
+            with self.subTest(state=state):
+                self.assertTrue(
+                    self.reviewer["is_complete_bot_review"](review, SHA)
+                )
+                self.assertTrue(self.gate["is_complete_bot_review"](review, SHA))
 
     def test_reviewer_emits_machine_readable_severity(self):
         findings = [
@@ -200,11 +229,15 @@ class ReviewGateFixtures(unittest.TestCase):
     def test_complete_review_has_no_high_finding(self):
         self.assertEqual(self.gate["high_finding_count"](FIXTURES["complete"]), 0)
 
-    def test_machine_marker_takes_precedence_over_legacy_table(self):
+    def test_visible_high_cannot_be_hidden_by_machine_marker(self):
         body = "\n".join(
             ("<!-- airforce-schwere hoch=0 mittel=0 -->", FIXTURES["english_high"])
         )
-        self.assertEqual(self.gate["high_finding_count"](body), 0)
+        self.assertEqual(self.gate["high_finding_count"](body), 1)
+        body = "\n".join(
+            ("<!-- airforce-schwere hoch=0 mittel=0 -->", FIXTURES["german_high"])
+        )
+        self.assertEqual(self.gate["high_finding_count"](body), 1)
 
     def test_legacy_notice_quoted_in_a_finding_does_not_make_review_incomplete(self):
         body = "\n".join(
@@ -238,6 +271,297 @@ class ReviewGateFixtures(unittest.TestCase):
         body = "unexpected diff payload\n" * 20
         with self.assertRaisesRegex(RuntimeError, "cannot be split"):
             self.batches["budget_batches"](body, 64)
+
+    def test_git_paths_come_from_authoritative_metadata(self):
+        cases = (
+            (
+                "diff --git a/foo b/bar.txt b/foo b/bar.txt\n"
+                "--- a/foo b/bar.txt\n+++ b/foo b/bar.txt\n"
+                "@@ -1 +1 @@\n-old\n+new\n",
+                "foo b/bar.txt",
+            ),
+            (
+                'diff --git "a/docs/a\\tb.txt" "b/docs/a\\tb.txt"\n'
+                '--- "a/docs/a\\tb.txt"\n+++ "b/docs/a\\tb.txt"\n'
+                "@@ -1 +1 @@\n-old\n+new\n",
+                "docs/a\tb.txt",
+            ),
+            (
+                'diff --git "a/Gr\\303\\274\\303\\237e.txt" '
+                '"b/Gr\\303\\274\\303\\237e.txt"\n'
+                '--- "a/Gr\\303\\274\\303\\237e.txt"\n'
+                '+++ "b/Gr\\303\\274\\303\\237e.txt"\n'
+                "@@ -1 +1 @@\n-old\n+new\n",
+                "Grüße.txt",
+            ),
+            (
+                'diff --git "a/docs/a\\\"b.md" "b/docs/a\\\"b.md"\n'
+                '--- "a/docs/a\\\"b.md"\n+++ "b/docs/a\\\"b.md"\n'
+                "@@ -1 +1 @@\n-old\n+new\n",
+                'docs/a"b.md',
+            ),
+            (
+                'diff --git "a/docs/a\\\\b.md" "b/docs/a\\\\b.md"\n'
+                '--- "a/docs/a\\\\b.md"\n+++ "b/docs/a\\\\b.md"\n'
+                "@@ -1 +1 @@\n-old\n+new\n",
+                "docs/a\\b.md",
+            ),
+        )
+        for raw, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(expected, self.batches["diff_target_path"](raw))
+                paths = [path for batch in self.batches["budget_batches"](raw, 512)
+                         for path, _ in batch]
+                self.assertEqual([expected], paths)
+
+    def test_hunk_content_cannot_override_file_metadata(self):
+        raw = (
+            "diff --git a/real.rs b/real.rs\n"
+            "--- a/real.rs\n+++ b/real.rs\n"
+            "@@ -1 +1 @@\n--- a/fake.rs\n+++ b/fake.rs\n"
+        )
+        self.assertEqual("real.rs", self.batches["diff_target_path"](raw))
+
+    def test_add_delete_rename_and_copy_paths_remain_identified(self):
+        cases = (
+            (
+                "diff --git a/new file b/new file\n--- /dev/null\n"
+                "+++ b/new file\n@@ -0,0 +1 @@\n+new\n",
+                "new file",
+            ),
+            (
+                "diff --git a/old file b/old file\n--- a/old file\n"
+                "+++ /dev/null\n@@ -1 +0,0 @@\n-old\n",
+                "old file",
+            ),
+            (
+                "diff --git a/old b/new name\nsimilarity index 100%\n"
+                "rename from old\nrename to new name\n",
+                "new name",
+            ),
+            (
+                "diff --git a/old b/copied name\nsimilarity index 100%\n"
+                "copy from old\ncopy to copied name\n",
+                "copied name",
+            ),
+        )
+        for raw, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(expected, self.batches["diff_target_path"](raw))
+                self.assertEqual(expected, self.batches["diff_chunks"](raw)[0][0])
+
+    def test_file_diffs_are_grouped_whole_before_path_parsing(self):
+        first = (
+            "diff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        )
+        second = (
+            "diff --git a/two.rs b/two.rs\n--- a/two.rs\n+++ b/two.rs\n"
+            "@@ -1 +1 @@\n-old\n+new\n"
+        )
+        chunks = self.batches["diff_chunks"](first + second)
+        self.assertEqual(["one.rs", "two.rs"], [path for path, _ in chunks])
+        self.assertEqual([first, second], [body for _, body in chunks])
+
+    def test_binary_mode_only_and_unknown_paths_use_a_sentinel(self):
+        binary = (
+            "diff --git a/image.bin b/image.bin\n"
+            "Binary files a/image.bin and b/image.bin differ\n"
+        )
+        mode_only = (
+            "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n"
+        )
+        empty_file = (
+            "diff --git a/empty.txt b/empty.txt\nnew file mode 100644\n"
+            "index 0000000..e69de29\n"
+        )
+        ambiguous_header = (
+            "diff --git a/dir b/file b/dir b/file\n"
+            "similarity index 100%\n"
+        )
+        sentinel = self.batches["UNKNOWN_PATH"]
+        for body in (binary, mode_only, empty_file, ambiguous_header):
+            with self.subTest(body=body.splitlines()[1]):
+                self.assertEqual(sentinel, self.batches["diff_target_path"](body))
+                self.assertEqual([(sentinel, body)], self.batches["diff_chunks"](body))
+                rebuilt = "".join(
+                    chunk for batch in self.batches["budget_batches"](body, 512)
+                    for _, chunk in batch
+                )
+                self.assertEqual(body, rebuilt)
+                self.assertEqual(
+                    [sentinel], self.batches["changed_path_manifest"](body)
+                )
+        self.assertEqual(
+            [sentinel], self.batches["dropped_paths"]([(None, binary)])
+        )
+
+    def test_malformed_git_markers_fail_closed(self):
+        for marker in ('+++ "b/missing', "+++ c/x", '+++ "b/x" unexpected'):
+            with self.subTest(marker=marker):
+                with self.assertRaises(ValueError):
+                    self.batches["diff_marker_path"](marker, "b/")
+
+    def test_paginated_review_sources_are_flattened_without_loss(self):
+        pages = [[{"id": 1}], [{"id": 2}], []]
+        self.assertEqual(
+            [{"id": 1}, {"id": 2}],
+            self.reviewer["flatten_paginated_lists"](pages),
+        )
+        self.assertEqual(
+            [{"id": 1}, {"id": 2}],
+            self.gate["flatten_paginated_lists"](pages),
+        )
+        for helpers in (self.reviewer, self.gate):
+            with self.assertRaises(ValueError):
+                helpers["flatten_paginated_lists"]([[{"id": 1}], {"id": 2}])
+
+    def test_api_pagination_and_fail_closed_reads_are_wired(self):
+        calls = []
+
+        def fake_review_gh(path, *extra):
+            calls.append((path, extra))
+            return [[{"id": 1}], [{"id": 2}]]
+
+        self.reviewer["gh"] = fake_review_gh
+        self.assertEqual(
+            [{"id": 1}, {"id": 2}],
+            self.reviewer["gh_paginated_list"]("repos/o/r/pulls/1/reviews"),
+        )
+        self.assertEqual(("--paginate", "--slurp"), calls[-1][1])
+
+        def fake_gate_gh(path, *extra, **options):
+            calls.append((path, extra, options))
+            return [[{"id": 1}], [{"id": 2}]]
+
+        self.gate["gh_json"] = fake_gate_gh
+        self.assertEqual(
+            [{"id": 1}, {"id": 2}],
+            self.gate["paginated_gh"]("repos/o/r/commits/s/comments"),
+        )
+        self.assertEqual(("--paginate", "--slurp"), calls[-1][1])
+        self.assertTrue(calls[-1][2]["loud"])
+
+        self.gate["gh_json"] = lambda *args, **kwargs: None
+        with self.assertRaises(RuntimeError):
+            self.gate["paginated_gh"]("repos/o/r/commits/s/comments")
+        with self.assertRaises(RuntimeError):
+            self.gate["required_gh_json"]("repos/o/r/collaborators/u/permission")
+
+    def test_every_review_source_uses_fail_closed_pagination(self):
+        source = inline_python(GATE_WORKFLOW)
+        endpoints = (
+            "commits/%s/pulls?per_page=100",
+            "commits/%s/comments?per_page=100",
+            "pulls/%s/reviews?per_page=100",
+            "issues/%s/comments?per_page=100",
+        )
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint):
+                self.assertIn(endpoint, source)
+        self.assertGreaterEqual(source.count("paginated_gh("), 6)
+        self.assertNotIn(
+            'gh_json("repos/%s/commits/%s/comments?per_page=100"', source
+        )
+
+    def test_reconciliation_envelope_and_exact_coverage_are_fail_closed(self):
+        paths = ["sdk/a.py", "sdk/b.py"]
+        reports = [
+            self.batches["make_batch_report"](
+                "batch-1", [paths[0]], "producer changed",
+                ["response field renamed"], [],
+            ),
+            self.batches["make_batch_report"](
+                "batch-2", [paths[1]], "consumer changed",
+                ["client reads response field"], [],
+            ),
+        ]
+        self.assertTrue(self.batches["reports_cover_manifest"](paths, reports))
+        prompt = self.batches["reconciliation_text"](paths, reports)
+        envelope = json.loads(prompt.split("\n\n", 1)[1])
+        self.assertEqual(paths, envelope["changed_paths"])
+        self.assertEqual(reports, envelope["batch_reports"])
+
+        valid = json.dumps(
+            {
+                "verdict": "findings",
+                "summary": "producer and consumer disagree",
+                "findings": [
+                    {
+                        "path": "sdk/b.py",
+                        "severity": "high",
+                        "note": "consumer still uses the old field",
+                    }
+                ],
+                "covered_batches": ["batch-2", "batch-1"],
+                "covered_paths": [paths[1], paths[0]],
+            }
+        )
+        summary, findings, broken = self.batches[
+            "parse_reconciliation_response"
+        ](valid, ["batch-1", "batch-2"], paths)
+        self.assertFalse(broken)
+        self.assertIn("disagree", summary)
+        self.assertNotIn("line", findings[0])
+
+        for field, value in (
+            ("covered_batches", ["batch-1"]),
+            ("covered_batches", ["batch-1", "batch-2", "batch-2"]),
+            ("covered_paths", [paths[0]]),
+            ("covered_paths", paths + ["extra.py"]),
+        ):
+            payload = json.loads(valid)
+            payload[field] = value
+            with self.subTest(field=field, value=value):
+                self.assertTrue(
+                    self.batches["parse_reconciliation_response"](
+                        json.dumps(payload), ["batch-1", "batch-2"], paths
+                    )[2]
+                )
+
+    def test_global_findings_are_body_only_and_local_lines_stay_inline(self):
+        local = [
+            {
+                "path": "sdk/a.py",
+                "line": 42,
+                "severity": "medium",
+                "note": "local defect",
+            }
+        ]
+        global_findings = [
+            {
+                "path": "sdk/b.py",
+                "line": 999,
+                "severity": "high",
+                "note": "cross-batch mismatch",
+            }
+        ]
+        body_only = self.batches["body_only_findings"](global_findings)
+        self.assertEqual(42, local[0]["line"])
+        self.assertEqual(999, global_findings[0]["line"])
+        self.assertNotIn("line", body_only[0])
+
+        source = inline_python(REVIEW_WORKFLOW)
+        self.assertIn("findings += f", source)
+        self.assertIn("findings += body_only_findings(global_findings)", source)
+        self.assertIn(
+            "incomplete = parse_kaputt or bool(dropped) or reconciliation_failed",
+            source,
+        )
+
+    def test_global_prompt_never_requests_or_guesses_line_numbers(self):
+        source = inline_python(REVIEW_WORKFLOW)
+        start = source.index("reconciliation_system = (")
+        stop = source.index("def stapel_text", start)
+        prompt = source[start:stop]
+        self.assertIn('"findings":[{"path":"...",', prompt)
+        self.assertNotIn('"line":', prompt)
+        self.assertIn("never include or guess line numbers", prompt)
+        self.assertIn('"cross_batch_facts":["..."]', source)
+        self.assertIn(
+            "if (len(batch_reports) > 1 and not parse_kaputt and not dropped",
+            source,
+        )
 
     def test_changed_inline_python_scripts_compile(self):
         for workflow in (REVIEW_WORKFLOW, GATE_WORKFLOW):
