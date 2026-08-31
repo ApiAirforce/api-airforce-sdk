@@ -272,6 +272,35 @@ class ReviewGateFixtures(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cannot be split"):
             self.batches["budget_batches"](body, 64)
 
+    def test_long_stream_resplit_uses_actual_payload_size(self):
+        first = ("diff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n"
+                 "@@ -0,0 +1 @@\n+" + "a" * 32_000 + "\n")
+        second = ("diff --git a/two.rs b/two.rs\n--- a/two.rs\n+++ b/two.rs\n"
+                  "@@ -0,0 +1 @@\n+" + "b" * 32_000 + "\n")
+        raw = first + second
+        initial = self.batches["budget_batches"](raw, 2_777_600)
+        self.assertEqual(1, len(initial))
+        limit, batches = self.batches["resplit_batch"](
+            initial[0], 2_777_600
+        )
+        self.assertEqual(40_000, limit)
+        self.assertEqual(2, len(batches))
+        self.assertEqual(
+            raw, "".join(body for batch in batches for _, body in batch)
+        )
+
+    def test_long_stream_resplit_rejects_no_progress(self):
+        body = "diff --git a/blob.bin b/blob.bin\n" + ("metadata\n" * 5_000)
+        parts = self.batches["budget_batches"](body, 2_777_600)[0]
+        with self.assertRaisesRegex(RuntimeError, "cannot be split"):
+            self.batches["resplit_batch"](parts, 2_777_600)
+
+        source = inline_python(REVIEW_WORKFLOW)
+        self.assertIn(
+            "smaller retry is possible - marking it incomplete", source
+        )
+        self.assertIn("dropped += dropped_paths(teile)", source)
+
     def test_git_paths_come_from_authoritative_metadata(self):
         cases = (
             (

@@ -480,6 +480,23 @@ jobs:
               if cur:
                   stapel.append(cur)
               return stapel
+
+
+          def resplit_batch(parts, current_limit, floor=40_000):
+              """Shrink a refused batch from its actual payload, not its ceiling."""
+              raw_diff = "".join(body for _, body in parts)
+              actual_size = len(raw_diff)
+              if actual_size <= floor:
+                  return None, []
+              next_limit = max(
+                  floor, min(current_limit // 2, actual_size // 2)
+              )
+              if next_limit >= actual_size:
+                  return None, []
+              batches = budget_batches(raw_diff, next_limit)
+              if len(batches) <= 1:
+                  return None, []
+              return next_limit, batches
           # END REVIEW_BATCH_HELPERS
 
 
@@ -1242,14 +1259,18 @@ jobs:
               try:
                   s, f, facts, k = durchsicht(stapel_text(nr, gesamt, teile))
               except _ZuGross as e:
-                  if b_grenze <= 40_000:
-                      print("upstream refuses even the smallest batch", file=sys.stderr)
-                      sys.exit(1)
-                  feiner_grenze = max(40_000, b_grenze // 2)
-                  print(f"upstream refused a {b_grenze} char batch ({e!s:.120}) - "
-                        f"resplitting it at {feiner_grenze}, {nr - 1} batch(es) done",
+                  feiner_grenze, feiner = resplit_batch(teile, b_grenze)
+                  if feiner_grenze is None:
+                      print("upstream refuses an indivisible batch; no strictly "
+                            "smaller retry is possible - marking it incomplete",
+                            file=sys.stderr)
+                      dropped += dropped_paths(teile)
+                      continue
+                  payload_size = sum(len(body) for _, body in teile)
+                  print(f"upstream refused a {payload_size} char payload at the "
+                        f"{b_grenze} char limit ({e!s:.120}) - resplitting it at "
+                        f"{feiner_grenze}, {nr - 1} batch(es) done",
                         file=sys.stderr)
-                  feiner = budget_batches("".join(b for _, b in teile), feiner_grenze)
                   offen[0:0] = [(feiner_grenze, t) for t in feiner]
                   gesamt = nr - 1 + len(offen)
                   nr -= 1
