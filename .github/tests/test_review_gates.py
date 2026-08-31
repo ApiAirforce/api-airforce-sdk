@@ -97,6 +97,7 @@ class ReviewGateFixtures(unittest.TestCase):
             "REVIEW_BATCH_HELPERS",
             {"MAX_DIFF": 128, "json": json},
         )
+        cls.size = helper_namespace(REVIEW_WORKFLOW, "REVIEW_SIZE_HELPERS")
 
     def test_legacy_incomplete_normal_markers_are_retryable_and_rejected(self):
         names = (
@@ -188,9 +189,9 @@ class ReviewGateFixtures(unittest.TestCase):
         findings = [
             {"severity": "high"},
             {"severity": "medium"},
-            {"severity": " High "},
+            {"severity": "high"},
             {"severity": "low"},
-            {},
+            {"severity": "medium"},
         ]
         self.assertEqual(
             self.reviewer["severity_marker"](findings),
@@ -204,21 +205,119 @@ class ReviewGateFixtures(unittest.TestCase):
             self.reviewer["severity_marker"]([{"severity": "critical"}])
 
         findings, invalid = self.reviewer["normalize_findings"](
-            [{"path": "review.yml", "severity": "critical"}]
+            [{"path": "review.yml", "line": 1, "severity": "critical",
+              "note": "unsupported level"}]
         )
-        self.assertEqual(findings, [])
+        self.assertEqual(findings[0]["severity"], "high")
         self.assertTrue(invalid)
 
-    def test_finding_severity_is_normalized_before_counting(self):
+    def test_finding_severity_must_use_an_exact_schema_value(self):
         findings, invalid = self.reviewer["normalize_findings"](
-            [{"path": "review.yml", "severity": " High ", "line": 1}]
+            [{"path": "review.yml", "severity": " High ", "line": 1,
+              "note": "noncanonical severity"}]
         )
-        self.assertFalse(invalid)
+        self.assertTrue(invalid)
         self.assertEqual(findings[0]["severity"], "high")
         self.assertEqual(
             self.reviewer["severity_marker"](findings),
             "<!-- airforce-schwere hoch=1 mittel=0 -->",
         )
+
+    def test_finding_schema_is_strict_for_local_and_global_results(self):
+        normalize = self.reviewer["normalize_findings"]
+        local = {
+            "path": " leading-and-trailing ",
+            "line": 7,
+            "severity": "medium",
+            "note": "local defect",
+        }
+        findings, invalid = normalize([local])
+        self.assertFalse(invalid)
+        self.assertEqual(local["path"], findings[0]["path"])
+
+        malformed = (
+            {"path": 7, "line": 1, "severity": "high", "note": "bad path"},
+            {"path": " ", "line": 1, "severity": "high", "note": "bad path"},
+            {"path": "x", "line": 1, "severity": "high", "note": 7},
+            {"path": "x", "line": 1, "severity": "high", "note": "   "},
+            {"path": "x", "line": "1", "severity": "high", "note": "bad"},
+            {"path": "x", "line": True, "severity": "high", "note": "bad"},
+            {"path": "x", "line": 0, "severity": "high", "note": "bad"},
+        )
+        for finding in malformed:
+            with self.subTest(finding=finding):
+                self.assertTrue(normalize([finding])[1])
+
+        global_finding = {
+            "path": "sdk/global.py",
+            "severity": "high",
+            "note": "cross-batch mismatch",
+        }
+        findings, invalid = normalize([global_finding], require_line=False)
+        self.assertFalse(invalid)
+        self.assertNotIn("line", findings[0])
+        invalid_global = dict(global_finding, line="unknown")
+        self.assertTrue(
+            normalize([invalid_global], require_line=False)[1])
+
+        missing_severity = dict(local)
+        missing_severity.pop("severity")
+        findings, invalid = normalize([missing_severity])
+        self.assertTrue(invalid)
+        self.assertEqual("high", findings[0]["severity"])
+
+    def test_only_input_size_errors_trigger_resplitting(self):
+        is_too_large = self.size["_ist_zu_gross"]
+        positive = (
+            "maximum context length exceeded",
+            "input and output tokens exceed the context window",
+            "too many input tokens",
+            "prompt is too long",
+            "payload exceeds the size limit",
+            "request_too_large",
+            "too many tokens",
+            "max_tokens set, but request body exceeds the size limit",
+        )
+        negative = (
+            "too large",
+            "exceeds",
+            "max_completion_tokens is too large",
+            "max_tokens exceeds the supported output limit",
+            "too many output tokens requested",
+            "too many tokens per minute",
+            "request exceeds rate limit",
+            "response too large",
+        )
+        for message in positive:
+            self.assertTrue(is_too_large(message), message)
+        for message in negative:
+            self.assertFalse(is_too_large(message), message)
+        self.assertTrue(
+            is_too_large("opaque relay error", "context_length_exceeded"))
+        self.assertFalse(
+            is_too_large("request too large", "rate_limit_error"))
+
+        http_is_too_large = self.size["_http_ist_zu_gross"]
+        self.assertTrue(http_is_too_large(413, "opaque relay error"))
+        self.assertTrue(http_is_too_large(
+            400, "input and output tokens exceed the context window"))
+        self.assertFalse(http_is_too_large(
+            429, "input exceeds the context window"))
+        self.assertFalse(http_is_too_large(
+            400, "max_completion_tokens requests too many tokens"))
+
+        source = inline_python(REVIEW_WORKFLOW)
+        size_check = source.index(
+            'if _ist_zu_gross(str(e), getattr(e, "typ", "")):'
+        )
+        compatibility = source.index(
+            'if getattr(e, "typ", "") == "invalid_request_error":'
+        )
+        self.assertLess(size_check, compatibility)
+        self.assertRegex(
+            source, r"_http_ist_zu_gross\(\s*e\.code, _leib,")
+        self.assertNotIn("e.read()[:300]", source)
+        self.assertIn("{_leib[:300]!r}", source)
 
     def test_english_high_is_counted(self):
         self.assertEqual(self.gate["high_finding_count"](FIXTURES["english_high"]), 1)

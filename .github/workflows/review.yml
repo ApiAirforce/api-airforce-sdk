@@ -515,20 +515,56 @@ jobs:
               """
           
           
-          def _ist_zu_gross(text):
+          # BEGIN REVIEW_SIZE_HELPERS
+          def _ist_zu_gross(text, error_type=""):
               """Does this error say the request was too large?
           
-              Matched on the words, because every gateway words it differently
-              and none of them carry a machine-readable code for it. Over-
-              matching costs a needless retry at half the size; under-matching
-              costs the whole review.
+              Input/context signals take precedence over output-option wording:
+              a relay may report that input and output together exceed the context
+              window. Rate-limit signals are never a reason to split the diff.
               """
               t = (text or "").lower()
-              return any(w in t for w in (
+              typ = (error_type or "").lower()
+              if typ in ("rate_limit", "rate_limit_error"):
+                  return False
+              if typ in ("context_length_exceeded", "context_length_error",
+                         "request_too_large"):
+                  return True
+              if any(w in t for w in (
+                  "rate limit", "rate_limit", "per minute", "tokens/min",
+                  "requests per minute")):
+                  return False
+              if any(w in t for w in (
                   "context length", "context_length", "context window",
-                  "maximum context", "too many tokens", "too large",
-                  "reduce the length", "input is too long", "prompt is too long",
-                  "exceeds", "request_too_large", "string_above_max_length"))
+                  "maximum context", "too many input tokens",
+                  "input is too long", "prompt is too long",
+                  "request too large", "request is too large",
+                  "request_too_large", "string_above_max_length")):
+                  return True
+              has_input_subject = any(w in t for w in (
+                  "context", "input", "prompt", "payload",
+                  "request body", "request size"))
+              has_size_signal = any(w in t for w in (
+                  "too large", "too long", "too many", "exceed",
+                  "maximum length", "max length", "size limit",
+                  "reduce the length"))
+              if has_input_subject and has_size_signal:
+                  return True
+              output_subject = any(w in t for w in (
+                  "max_completion_tokens", "max_tokens", "output token",
+                  "response"))
+              output_size_signal = any(w in t for w in (
+                  "too large", "too long", "too many", "exceed"))
+              if output_subject and output_size_signal:
+                  return False
+              return "too many tokens" in t
+
+
+          def _http_ist_zu_gross(status, body, reason=""):
+              """HTTP 413 is size; HTTP 429 is rate regardless of its wording."""
+              return status == 413 or (status != 429 and (
+                  _ist_zu_gross(body) or _ist_zu_gross(reason)))
+          # END REVIEW_SIZE_HELPERS
 
           if not KEY or not BASE:
               # Fork PRs get no secrets. That is correct and not an error - but it
@@ -608,23 +644,35 @@ jobs:
 
 
           def normalize_severity(value):
-              level = str(value or "medium").strip().casefold()
-              if level not in {"high", "medium", "low"}:
+              if (not isinstance(value, str)
+                      or value not in {"high", "medium", "low"}):
                   raise ValueError(f"unsupported review severity: {value!r}")
-              return level
+              return value
 
 
-          def normalize_findings(raw_findings):
+          def normalize_findings(raw_findings, require_line=True):
+              """Validate local and global finding schemas without rewriting paths."""
               findings, invalid = [], False
               for finding in raw_findings:
-                  if not isinstance(finding, dict) or not finding.get("path"):
+                  if not isinstance(finding, dict):
+                      invalid = True
+                      continue
+                  path = finding.get("path")
+                  note = finding.get("note")
+                  line = finding.get("line")
+                  if (not isinstance(path, str) or not path.strip()
+                          or not isinstance(note, str) or not note.strip()
+                          or (require_line and (
+                              type(line) is not int or line < 1))
+                          or (not require_line and line is not None and (
+                              type(line) is not int or line < 1))):
                       invalid = True
                       continue
                   try:
                       severity = normalize_severity(finding.get("severity"))
                   except ValueError:
+                      severity = "high"
                       invalid = True
-                      continue
                   finding = dict(finding)
                   finding["severity"] = severity
                   findings.append(finding)
@@ -1072,6 +1120,11 @@ jobs:
                       # (reasoning_effort max -> high -> ohne). Meldet das
                       # Relay denselben Fall als 200er-Rumpf, gehoert ihm
                       # dieselbe Reparatur - erst danach ist er dauerhaft.
+                      # A size refusal must be classified before that compatibility
+                      # ladder. Otherwise context_length_exceeded is resent unchanged
+                      # with two reasoning settings before the diff is split.
+                      if _ist_zu_gross(str(e), getattr(e, "typ", "")):
+                          raise _ZuGross(str(e))
                       if getattr(e, "typ", "") == "invalid_request_error":
                           _stufe = payload.get("reasoning_effort")
                           if _stufe == "max":
@@ -1087,13 +1140,6 @@ jobs:
                                     "weiter ohne reasoning_effort",
                                     file=sys.stderr)
                               continue
-                      # A SIZE REFUSAL IS NOT A PERMANENT FAILURE, IT IS A HINT.
-                      #
-                      # Passed upward so the batch is cut finer and sent again, instead of
-                      # ending the whole run. Without this the class below is dead code: the
-                      # shrink loop exists, and nothing ever reaches it.
-                      if _ist_zu_gross(str(e)):
-                          raise _ZuGross(str(e))
                       # No words, but it ran long: treat it as a size hint rather than
                       # retrying the same oversized batch until the deadline eats the run.
                       _gelaufen = time.monotonic() - _versuch_ab
@@ -1129,7 +1175,8 @@ jobs:
                           _leib = e.read().decode("utf-8", "replace")[:2000]
                       except Exception:
                           pass
-                      if _ist_zu_gross(_leib) or _ist_zu_gross(getattr(e, "reason", "")):
+                      if _http_ist_zu_gross(
+                              e.code, _leib, getattr(e, "reason", "")):
                           raise _ZuGross(_leib or str(e))
                       # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
                       # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
@@ -1154,7 +1201,7 @@ jobs:
                           time.sleep(p)
                           continue
                       # A reviewer that could not run must fail loudly, not pass as clean.
-                      print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
+                      print(f"Model call failed: HTTP {e.code}: {_leib[:300]!r}", file=sys.stderr)
                       sys.exit(1)
                   # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
                   # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
@@ -1190,7 +1237,8 @@ jobs:
                       return text.strip()[:2000], [], [], True
                   summary, raw_findings, broken = parse_reconciliation_response(
                       text, expected_batches, expected_paths)
-                  findings, invalid_findings = normalize_findings(raw_findings)
+                  findings, invalid_findings = normalize_findings(
+                      raw_findings, require_line=False)
                   return summary, findings, [], broken or invalid_findings
 
               m = re.search(r"\{.*\}", text, re.S)
@@ -1322,9 +1370,11 @@ jobs:
                       reconciliation_failed = True
                   else:
                       reconciliation_failed = broken
-                      if global_summary and not broken:
-                          teil_zusammenfassungen.append(f"(global) {global_summary}")
-                      findings += body_only_findings(global_findings)
+                      if not broken:
+                          if global_summary:
+                              teil_zusammenfassungen.append(
+                                  f"(global) {global_summary}")
+                          findings += body_only_findings(global_findings)
           summary = " ".join(teil_zusammenfassungen).strip() or "(no summary)"
 
           sev_de = {"high": "hoch", "medium": "mittel", "low": "niedrig"}
