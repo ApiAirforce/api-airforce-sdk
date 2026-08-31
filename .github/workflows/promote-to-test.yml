@@ -40,12 +40,10 @@
 # `workflow_run` takes over and hits the timing exactly.
 # ============================================================================
 
-# NOTE ON THIS PUBLIC REPO: this file is character-identical to the one in
-# the other repos except for two lines - one template, many instances, so
-# there is only ONE implementation. The two differences are necessary:
-# `ubuntu-latest` instead of a self-hosted runner (a self-hosted runner on a
-# public repo is attackable through a fork PR), and DURCHSICHT_NOETIG is set
-# to `nein`, because there is no review-push.yml here.
+# NOTE ON THIS PUBLIC REPO: use `ubuntu-latest`, never a self-hosted runner that
+# a fork pull request could reach. There is no push reviewer here, but `dev` is
+# PR-only: branch commits carry reviews from review.yml and merge commits are
+# skipped below. The review gate must therefore stay enabled.
 
 name: promote to test
 
@@ -114,11 +112,9 @@ env:
     Dart
     Rust
   TITEL: 'dev kommt nicht nach test'
-  # `nein` ONLY for repos without review-push.yml. There, a direct push
-  # carries no review the gate could find - it would report every commit as
-  # "without review" and never open. The gate then demands the checks, and
-  # only those. Whoever wires up the reviewer there switches this to `ja`.
-  DURCHSICHT_NOETIG: 'nein'
+  # `dev` accepts reviewed PRs only. Their branch commits are present after a
+  # merge and carry the exact-SHA reviews that the gate verifies below.
+  DURCHSICHT_NOETIG: 'ja'
 
 jobs:
   tor:
@@ -429,8 +425,71 @@ jobs:
           # ---- Point 2+3: review and open findings ---------------------------
           without, high = [], []
           DURCHSICHT = (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() == "ja"
+
+          # BEGIN GATE_REVIEW_HELPERS
+          REVIEW_BOT = "github-actions[bot]"
+
+
+          def complete_review_markers(sha):
+              return (
+                  f"<!-- airforce-review {sha} -->",
+                  f"<!-- airforce-review-push {sha} -->",
+              )
+
+
+          def incomplete_review_markers(sha):
+              return (
+                  f"<!-- airforce-incomplete-review {sha} -->",
+                  f"<!-- airforce-incomplete-review-push {sha} -->",
+                  f"<!-- airforce-review-push-unvollstaendig {sha} -->",
+              )
+
+
+          def legacy_review_incomplete(body):
+              """Recognise incomplete reviews that still carried a complete marker."""
+              notices = (
+                  r"^_not reviewed - the wall-clock cap was reached:",
+                  r"^_nicht beurteilt, weil die zeitkappe erreicht war:",
+                  r"^_nicht beurteilt, weil ueber dem 160k-budget:",
+                  r"^_die vorher-marke dieses pushes war nicht abrufbar ",
+                  r"^> \*\*the model answer was not usable json\.\*\*",
+                  r"^> \*\*die modellantwort war kein verwertbares json\.\*\*",
+                  r"^> \*\*die durchsicht ist unvollstaendig\.\*\*",
+              )
+              return any(re.search(notice, body or "", re.I | re.M)
+                         for notice in notices)
+
+
+          def review_is_complete(body, sha):
+              text = body or ""
+              if legacy_review_incomplete(text):
+                  return False
+              if any(marker in text for marker in incomplete_review_markers(sha)):
+                  return False
+              return any(marker in text for marker in complete_review_markers(sha))
+
+
+          def is_complete_bot_review(review, sha):
+              user = review.get("user") or {}
+              return (user.get("type") == "Bot"
+                      and user.get("login") == REVIEW_BOT
+                      and review_is_complete(review.get("body") or "", sha))
+
+
+          def high_finding_count(body):
+              text = body or ""
+              machine = re.findall(
+                  r"^<!-- airforce-schwere hoch=(\d+) mittel=(\d+) -->$",
+                  text, re.M)
+              if machine:
+                  return int(machine[-1][0])
+              # Legacy reviews have no machine marker. Public reviews use
+              # `high`; internal reviews use `hoch`.
+              return len(re.findall(r"\|\s*(?:high|hoch)\s*\|", text, re.I))
+          # END GATE_REVIEW_HELPERS
+
           if not DURCHSICHT:
-              print("The review is not required in this repo (no review-push.yml).")
+              print("The automated review gate is disabled for this repository.")
               raw = ""
           else:
               raw = git("log", "%s..%s" % (basis, dev),
@@ -473,16 +532,8 @@ jobs:
                   # type == "Bot". A human cannot set `type` to Bot.
                   # NOT affected: `#erledigt` / `#fehlalarm`. Those run over a
                   # separate regex on `comm` and are supposed to come from humans.
-                  BOT = "github-actions[bot]"
-
                   def _review(k):
-                      u = k.get("user") or {}
-                      if u.get("type") != "Bot" or u.get("login") != BOT:
-                          return False
-                      t = k.get("body") or ""
-                      return ("airforce-review-push" in t
-                              or "Automatische Durchsicht" in t
-                              or "Automated review" in t)
+                      return is_complete_bot_review(k, sha)
 
                   comm = gh_json("repos/%s/commits/%s/comments?per_page=100" % (REPO, sha)) or []
                   found = [c for c in comm if _review(c)]
@@ -518,10 +569,7 @@ jobs:
 
                   newest = max(found, key=lambda c: c.get("created_at") or "")
                   body = newest.get("body") or ""
-                  m = re.search(r"airforce-schwere hoch=(\d+)", body)
-                  # Old comments do not carry the marker - then read the table.
-                  # If the marker is missing, nothing is waved through.
-                  count = int(m.group(1)) if m else len(re.findall(r"\|\s*hoch\s*\|", body))
+                  count = high_finding_count(body)
                   if count:
                       # WHO MAY ANSWER (review finding `hoch`, 28.08.2026).
                       # `#erledigt` / `#fehlalarm` closes a finding and opens

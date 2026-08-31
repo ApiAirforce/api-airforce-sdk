@@ -321,13 +321,63 @@ jobs:
                   sys.exit(2)
               return r.stdout if raw else json.loads(r.stdout)
 
+          # BEGIN REVIEW_MARKER_HELPERS
+          REVIEW_BOT = "github-actions[bot]"
+
+
+          def complete_review_marker(sha):
+              return f"<!-- airforce-review {sha} -->"
+
+
+          def incomplete_review_marker(sha):
+              # Keep this substring-disjoint from the legacy complete marker:
+              # older gates used a broad `airforce-review` substring test.
+              return f"<!-- airforce-incomplete-review {sha} -->"
+
+
+          def legacy_review_incomplete(body):
+              """Recognise incomplete reviews posted before they had their own marker."""
+              notices = (
+                  r"^_not reviewed - the wall-clock cap was reached:",
+                  r"^_nicht beurteilt, weil die zeitkappe erreicht war:",
+                  r"^> \*\*the model answer was not usable json\.\*\*",
+                  r"^> \*\*die modellantwort war kein verwertbares json\.\*\*",
+              )
+              return any(re.search(notice, body or "", re.I | re.M)
+                         for notice in notices)
+
+
+          def review_is_complete(body, sha):
+              text = body or ""
+              if legacy_review_incomplete(text):
+                  return False
+              if incomplete_review_marker(sha) in text:
+                  return False
+              return complete_review_marker(sha) in text
+
+
+          def is_complete_bot_review(review, sha):
+              user = review.get("user") or {}
+              return (user.get("type") == "Bot"
+                      and user.get("login") == REVIEW_BOT
+                      and review_is_complete(review.get("body") or "", sha))
+
+
+          def severity_marker(findings):
+              levels = [str(f.get("severity") or "medium").casefold()
+                        for f in findings]
+              high = sum(level == "high" for level in levels)
+              medium = sum(level == "medium" for level in levels)
+              return f"<!-- airforce-schwere hoch={high} mittel={medium} -->"
+          # END REVIEW_MARKER_HELPERS
+
           pr = gh(f"repos/{REPO}/pulls/{PR}")
           head = os.environ.get("HEAD_SHA") or pr["head"]["sha"]
-          marker = f"<!-- airforce-review {head} -->"
 
-          # Idempotence: one review per head commit, re-runs must not spam.
-          for rv in gh(f"repos/{REPO}/pulls/{PR}/reviews", "--paginate"):
-              if marker in (rv.get("body") or ""):
+          # Idempotence: only a complete review suppresses a re-run. An incomplete
+          # review must remain retryable, and only the workflow bot can satisfy it.
+          for rv in gh(f"repos/{REPO}/pulls/{PR}/reviews?per_page=100"):
+              if is_complete_bot_review(rv, head):
                   print(f"Review for {head[:7]} already posted - nothing to do.")
                   sys.exit(0)
 
@@ -946,7 +996,10 @@ jobs:
                   if not english else
                   "> **The model answer was not usable JSON.** Structured findings may "
                   "be missing. The run fails for that reason.")
-          lines += ["", f"_{MODEL} · api.airforce_", marker]
+          incomplete = parse_kaputt or bool(dropped)
+          marker = (incomplete_review_marker(head) if incomplete
+                    else complete_review_marker(head))
+          lines += ["", f"_{MODEL} · api.airforce_", severity_marker(findings), marker]
           body = "\n".join(lines)
 
           comments = [{"path": f["path"], "line": int(f["line"]), "side": "RIGHT",
