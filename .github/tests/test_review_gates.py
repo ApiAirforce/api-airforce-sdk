@@ -185,6 +185,218 @@ class ReviewGateFixtures(unittest.TestCase):
                 )
                 self.assertTrue(self.gate["is_complete_bot_review"](review, SHA))
 
+    def test_final_pr_head_covers_only_commits_from_a_normal_dev_merge(self):
+        first_parent = "a" * 40
+        earlier_commit = "b" * 40
+        review_head = "c" * 40
+        merge_sha = "d" * 40
+        unrelated = "e" * 40
+        candidate_shas = {earlier_commit, review_head, merge_sha}
+        pull = {
+            "merged_at": "2026-08-31T20:00:00Z",
+            "merge_commit_sha": merge_sha,
+            "base": {"ref": "dev"},
+            "head": {"sha": review_head},
+        }
+
+        def normal_merge_git(*args):
+            if args == ("rev-list", "--parents", "-1", merge_sha):
+                return f"{merge_sha} {first_parent} {review_head}"
+            if args == ("rev-list", f"{first_parent}..{review_head}"):
+                return f"{review_head}\n{earlier_commit}"
+            raise AssertionError(f"unexpected git call: {args!r}")
+
+        prior_git = self.gate.get("git")
+        self.gate["git"] = normal_merge_git
+        try:
+            fallback_head = self.gate["normal_merge_review_head"](
+                pull, earlier_commit, candidate_shas
+            )
+            self.assertEqual(review_head, fallback_head)
+            self.assertIsNone(self.gate["normal_merge_review_head"](
+                pull, unrelated, candidate_shas
+            ))
+
+            for name, changed_pull, changed_candidates in (
+                ("unmerged", dict(pull, merged_at=None), candidate_shas),
+                (
+                    "wrong base",
+                    dict(pull, base={"ref": "main"}),
+                    candidate_shas,
+                ),
+                ("outside candidate", pull, {earlier_commit, review_head}),
+                (
+                    "API head differs",
+                    dict(pull, head={"sha": "f" * 40}),
+                    candidate_shas,
+                ),
+            ):
+                with self.subTest(case=name):
+                    self.assertIsNone(self.gate["normal_merge_review_head"](
+                        changed_pull, earlier_commit, changed_candidates
+                    ))
+
+            complete_at_head = FIXTURES["complete"].replace(SHA, review_head)
+            review = {
+                "body": complete_at_head,
+                "commit_id": review_head,
+                "user": {"type": "Bot", "login": "github-actions[bot]"},
+            }
+            for state in ("PENDING", "DISMISSED", "", None):
+                review["state"] = state
+                with self.subTest(state=state):
+                    self.assertFalse(self.gate["is_complete_bot_review"](
+                        review, fallback_head
+                    ))
+            review["state"] = "COMMENTED"
+            self.assertTrue(self.gate["is_complete_bot_review"](
+                review, fallback_head
+            ))
+        finally:
+            if prior_git is None:
+                self.gate.pop("git", None)
+            else:
+                self.gate["git"] = prior_git
+
+    def test_squash_rebase_and_octopus_graphs_cannot_supply_fallback_evidence(self):
+        first_parent = "a" * 40
+        commit_sha = "b" * 40
+        review_head = "c" * 40
+        merge_sha = "d" * 40
+        pull = {
+            "merged_at": "2026-08-31T20:00:00Z",
+            "merge_commit_sha": merge_sha,
+            "base": {"ref": "dev"},
+            "head": {"sha": review_head},
+        }
+        candidate_shas = {commit_sha, review_head, merge_sha}
+        prior_git = self.gate.get("git")
+        try:
+            for name, parent_line in (
+                ("squash or rebase", f"{merge_sha} {first_parent}"),
+                (
+                    "octopus",
+                    f"{merge_sha} {first_parent} {review_head} {'e' * 40}",
+                ),
+            ):
+                def graph_git(*args, line=parent_line):
+                    if args == ("rev-list", "--parents", "-1", merge_sha):
+                        return line
+                    raise AssertionError(f"unexpected git call: {args!r}")
+
+                self.gate["git"] = graph_git
+                with self.subTest(case=name):
+                    self.assertIsNone(self.gate["normal_merge_review_head"](
+                        pull, commit_sha, candidate_shas
+                    ))
+        finally:
+            if prior_git is None:
+                self.gate.pop("git", None)
+            else:
+                self.gate["git"] = prior_git
+
+    def test_exact_commit_evidence_precedes_pr_head_fallback_and_uses_head_answers(self):
+        review_head = "c" * 40
+        exact_high = {
+            "body": "\n".join((
+                FIXTURES["english_high"],
+                f"<!-- airforce-review {SHA} -->",
+            )),
+            "created_at": "2026-08-31T20:00:00Z",
+        }
+        later_clean_fallback = {
+            "body": FIXTURES["complete"].replace(SHA, review_head),
+            "created_at": "2026-08-31T20:10:00Z",
+            "review_head": review_head,
+        }
+        selected = self.gate["prefer_exact_review_evidence"](
+            [exact_high], [later_clean_fallback]
+        )
+        self.assertEqual([exact_high], selected)
+        self.assertEqual(
+            1, self.gate["high_finding_count"](selected[0]["body"])
+        )
+        self.assertEqual(
+            [], self.gate["response_comment_heads"](selected, SHA)
+        )
+        self.assertEqual(
+            SHA, self.gate["review_response_sha"](selected[0], SHA)
+        )
+        all_findings = self.gate["latest_finding_evidence"](
+            [exact_high], [later_clean_fallback]
+        )
+        self.assertEqual([exact_high, later_clean_fallback], all_findings)
+        self.assertEqual(
+            [1, 0],
+            [self.gate["high_finding_count"](item["body"])
+             for item in all_findings],
+        )
+
+        selected = self.gate["prefer_exact_review_evidence"](
+            [], [later_clean_fallback]
+        )
+        self.assertEqual([later_clean_fallback], selected)
+        self.assertEqual(
+            [review_head], self.gate["response_comment_heads"](selected, SHA)
+        )
+        self.assertEqual(
+            review_head,
+            self.gate["review_response_sha"](selected[0], SHA),
+        )
+        commit_comment = {"body": "#erledigt exact"}
+        pr_comment = {"body": "#erledigt PR"}
+        head_comment = {"body": "#erledigt head"}
+        self.assertEqual(
+            [pr_comment, commit_comment],
+            self.gate["response_comments_for_evidence"](
+                exact_high,
+                SHA,
+                [commit_comment],
+                [pr_comment],
+                {review_head: [head_comment]},
+            ),
+        )
+        self.assertEqual(
+            [pr_comment, head_comment],
+            self.gate["response_comments_for_evidence"](
+                later_clean_fallback,
+                SHA,
+                [commit_comment],
+                [pr_comment],
+                {review_head: [head_comment]},
+            ),
+        )
+
+        exact_clean = {
+            "body": FIXTURES["complete"],
+            "created_at": "2026-08-31T20:00:00Z",
+        }
+        fallback_high = dict(
+            later_clean_fallback,
+            body="\n".join((
+                FIXTURES["english_high"],
+                f"<!-- airforce-review {review_head} -->",
+            )),
+        )
+        all_findings = self.gate["latest_finding_evidence"](
+            [exact_clean], [fallback_high]
+        )
+        self.assertEqual(
+            [0, 1],
+            [self.gate["high_finding_count"](item["body"])
+             for item in all_findings],
+        )
+
+        source = inline_python(GATE_WORKFLOW)
+        self.assertRegex(
+            source,
+            r"(?s)for review_head in response_comment_heads\(fallback_found, sha\):.*?"
+            r"head_comments\[review_head\] = paginated_gh\(\s*"
+            r'"repos/%s/commits/%s/comments\?per_page=100"\s*'
+            r"% \(REPO, review_head\)\)",
+        )
+        self.assertIn("and review_head != sha", source)
+
     def test_reviewer_emits_machine_readable_severity(self):
         findings = [
             {"severity": "high"},
@@ -640,6 +852,7 @@ class ReviewGateFixtures(unittest.TestCase):
             {
                 "verdict": "findings",
                 "summary": "producer and consumer disagree",
+                "cross_batch_facts": [],
                 "findings": [
                     {
                         "path": "sdk/b.py",
@@ -672,6 +885,49 @@ class ReviewGateFixtures(unittest.TestCase):
                         json.dumps(payload), ["batch-1", "batch-2"], paths
                     )[2]
                 )
+
+    def test_review_envelopes_require_every_top_level_schema_field(self):
+        validate = self.batches["review_envelope_is_valid"]
+        valid = {
+            "verdict": "lgtm",
+            "summary": "",
+            "cross_batch_facts": [],
+            "findings": [],
+        }
+        self.assertTrue(validate(valid))
+        for field in ("summary", "cross_batch_facts", "findings"):
+            malformed = dict(valid)
+            malformed.pop(field)
+            with self.subTest(missing=field):
+                self.assertFalse(validate(malformed))
+
+        invalid_values = {
+            "summary": ({}, [], 0, False, None),
+            "cross_batch_facts": ({}, "", 0, False, None, [1], ["   "]),
+            "findings": ({}, "", 0, False, None),
+        }
+        for field, values in invalid_values.items():
+            for value in values:
+                malformed = dict(valid)
+                malformed[field] = value
+                with self.subTest(field=field, value=value):
+                    self.assertFalse(validate(malformed))
+
+        self.assertFalse(validate(dict(
+            valid, verdict="findings", findings=[]
+        )))
+        # Keep the existing minimal contract: empty summaries and lgtm findings
+        # remain valid; this fix only closes missing or malformed fields.
+        self.assertTrue(validate(dict(
+            valid,
+            findings=[{"path": "sdk/a.py", "line": 1,
+                       "severity": "low", "note": "visible"}],
+        )))
+
+        source = inline_python(REVIEW_WORKFLOW)
+        self.assertGreaterEqual(
+            source.count("review_envelope_is_valid(verdict)"), 2
+        )
 
     def test_global_findings_are_body_only_and_local_lines_stay_inline(self):
         local = [
@@ -709,6 +965,7 @@ class ReviewGateFixtures(unittest.TestCase):
         stop = source.index("def stapel_text", start)
         prompt = source[start:stop]
         self.assertIn('"findings":[{"path":"...",', prompt)
+        self.assertIn('"cross_batch_facts":[]', prompt)
         self.assertNotIn('"line":', prompt)
         self.assertIn("never include or guess line numbers", prompt)
         self.assertIn('"cross_batch_facts":["..."]', source)

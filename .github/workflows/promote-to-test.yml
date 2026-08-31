@@ -424,6 +424,7 @@ jobs:
 
           # ---- Point 2+3: review and open findings ---------------------------
           without, high = [], []
+          high_keys = set()
           DURCHSICHT = (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() == "ja"
 
           # BEGIN GATE_REVIEW_HELPERS
@@ -494,6 +495,72 @@ jobs:
                       and is_complete_bot_entry(review, sha))
 
 
+          def normal_merge_review_head(pull, sha, candidate_shas):
+              """Return the reviewed PR head only for a proven normal merge.
+
+              A review at that head covers the complete PR diff, but it must not
+              become generic evidence for every commit merely associated with a
+              pull request. The merge graph proves both the exact reviewed state
+              and that the commit was introduced by this PR into `dev`.
+              """
+              if (not pull.get("merged_at")
+                      or (pull.get("base") or {}).get("ref") != "dev"):
+                  return None
+              merge_sha = pull.get("merge_commit_sha") or ""
+              if not merge_sha or merge_sha not in candidate_shas:
+                  return None
+              merge_line = (git(
+                  "rev-list", "--parents", "-1", merge_sha) or "").split()
+              # Exactly two parents: first is the prior dev state, second is the
+              # final PR head. Squash, rebase and octopus merges remain unsupported.
+              if len(merge_line) != 3 or merge_line[0] != merge_sha:
+                  return None
+              first_parent, review_head = merge_line[1:]
+              if (pull.get("head") or {}).get("sha") != review_head:
+                  return None
+              introduced = set((git(
+                  "rev-list", "%s..%s" % (first_parent, review_head))
+                  or "").splitlines())
+              return review_head if sha in introduced else None
+
+
+          def prefer_exact_review_evidence(exact, fallback):
+              """A later PR-head review must never hide exact commit findings."""
+              return list(exact) if exact else list(fallback)
+
+
+          def latest_finding_evidence(exact, fallback):
+              """Keep the latest exact and fallback verdicts independently."""
+              return [max(group, key=lambda item: item.get("created_at") or "")
+                      for group in (exact, fallback) if group]
+
+
+          def response_comment_heads(evidence, sha):
+              """Commit heads whose fallback reviews may carry response comments."""
+              return list(dict.fromkeys(
+                  item.get("review_head")
+                  for item in evidence
+                  if item.get("review_head") and item.get("review_head") != sha
+              ))
+
+
+          def review_response_sha(evidence, sha):
+              """Name the exact commit where a finding response belongs."""
+              return evidence.get("review_head") or sha
+
+
+          def response_comments_for_evidence(
+                  evidence, sha, commit_comments, pr_comments, head_comments):
+              """Keep exact-commit and fallback-head responses disjoint."""
+              comments = list(pr_comments)
+              review_head = evidence.get("review_head")
+              if review_head and review_head != sha:
+                  comments += list(head_comments.get(review_head, []))
+              else:
+                  comments += list(commit_comments)
+              return comments
+
+
           def flatten_paginated_lists(pages):
               if not isinstance(pages, list):
                   raise ValueError("paginated GitHub response is not a page list")
@@ -540,11 +607,14 @@ jobs:
           else:
               raw = git("log", "%s..%s" % (basis, dev),
                         "--format=%H" + SEP + "%an" + SEP + "%s") or ""
+              entries = []
               for line in raw.splitlines():
                   parts = line.split(SEP)
                   if len(parts) != 3:
                       continue
-                  sha, author, subject = parts
+                  entries.append(parts)
+              candidate_shas = {parts[0] for parts in entries}
+              for sha, author, subject in entries:
                   if author.endswith("[bot]") or author in ("github-actions", "dependabot"):
                       continue
                   parents = (git("rev-list", "--parents", "-1", sha) or "").split()[1:]
@@ -577,11 +647,14 @@ jobs:
                   # have opened with hoch=0.
                   # Measured who really writes it: github-actions[bot],
                   # type == "Bot". A human cannot set `type` to Bot.
-                  # NOT affected: `#erledigt` / `#fehlalarm`. Those run over a
-                  # separate regex on `comm` and are supposed to come from humans.
-                  comm = paginated_gh(
+                  # NOT affected: `#erledigt` / `#fehlalarm`. Those use a
+                  # separate regex over response comments and must come from humans.
+                  commit_comments = paginated_gh(
                       "repos/%s/commits/%s/comments?per_page=100" % (REPO, sha))
-                  found = [c for c in comm if is_complete_bot_comment(c, sha)]
+                  exact_found = [c for c in commit_comments
+                                 if is_complete_bot_comment(c, sha)]
+                  fallback_found = []
+                  pr_comments = []
                   # PR reviews carry `submitted_at` instead of `created_at` -
                   # without aligning them, `max(...)` below picks the wrong one
                   # as newest and reads the findings of an outdated version.
@@ -590,9 +663,12 @@ jobs:
                       nr = p.get("number")
                       if not nr:
                           continue
-                      for r in paginated_gh(
+                      reviews = paginated_gh(
                               "repos/%s/pulls/%s/reviews?per_page=100"
-                              % (REPO, nr)):
+                              % (REPO, nr))
+                      review_head = normal_merge_review_head(
+                          p, sha, candidate_shas)
+                      for r in reviews:
                           # ONLY A REVIEW AT EXACTLY THIS COMMIT.
                           # Finding `hoch` from the review, 2026-08-25, and it
                           # hits: a PR carries several commits, and each of its
@@ -603,22 +679,56 @@ jobs:
                           # the review saw.
                           if (is_complete_bot_review(r, sha)
                                   and r.get("commit_id") == sha):
-                              found.append({"body": r.get("body") or "",
-                                            "created_at": r.get("submitted_at") or "",
-                                            "html_url": r.get("html_url") or ""})
-                      # Answers (`#erledigt` / `#fehlalarm`) stand at the PR,
-                      # not at the commit - otherwise an answered finding keeps
-                      # counting as open.
-                      comm += paginated_gh(
+                              exact_found.append({
+                                  "body": r.get("body") or "",
+                                  "created_at": r.get("submitted_at") or "",
+                                  "html_url": r.get("html_url") or "",
+                              })
+                          # A final PR-head review is a fallback only. The graph
+                          # helper above proves a normal merge into dev and exact
+                          # membership in that PR's second-parent range.
+                          if (review_head
+                                  and review_head != sha
+                                  and r.get("commit_id") == review_head
+                                  and is_complete_bot_review(r, review_head)):
+                              fallback_found.append({
+                                  "body": r.get("body") or "",
+                                  "created_at": r.get("submitted_at") or "",
+                                  "html_url": r.get("html_url") or "",
+                                  "review_head": review_head,
+                              })
+                      # PR issue comments can answer findings posted as PR reviews.
+                      # Exact commit comments are already in `commit_comments`;
+                      # comments at a qualifying fallback head are added afterwards.
+                      pr_comments += paginated_gh(
                           "repos/%s/issues/%s/comments?per_page=100" % (REPO, nr))
+                  found = prefer_exact_review_evidence(
+                      exact_found, fallback_found)
+                  # A fallback finding belongs to the reviewed PR head. Accept
+                  # authorised responses attached to that exact commit as well as
+                  # the existing PR-issue responses.
+                  head_comments = {}
+                  for review_head in response_comment_heads(fallback_found, sha):
+                      head_comments[review_head] = paginated_gh(
+                          "repos/%s/commits/%s/comments?per_page=100"
+                          % (REPO, review_head))
                   if not found:
                       without.append((sha, subject))
                       continue
 
-                  newest = max(found, key=lambda c: c.get("created_at") or "")
-                  body = newest.get("body") or ""
-                  count = high_finding_count(body)
-                  if count:
+                  # Exact evidence controls coverage, but findings from the final
+                  # reviewed PR head remain independently binding. This preserves
+                  # both directions: a clean head cannot erase an earlier exact
+                  # high, and an earlier clean review cannot erase a head high.
+                  for newest in latest_finding_evidence(
+                          exact_found, fallback_found):
+                      body = newest.get("body") or ""
+                      count = high_finding_count(body)
+                      if not count:
+                          continue
+                      response_sha = review_response_sha(newest, sha)
+                      answer_comments = response_comments_for_evidence(
+                          newest, sha, commit_comments, pr_comments, head_comments)
                       # WHO MAY ANSWER (review finding `hoch`, 28.08.2026).
                       # `#erledigt` / `#fehlalarm` closes a finding and opens
                       # the gate - and this regex ran over EVERY comment
@@ -666,9 +776,14 @@ jobs:
                               return False
                           return _write_right((c.get("user") or {}).get("login"))
 
-                      answered = any(_is_answer(c) for c in comm)
-                      if not answered:
-                          high.append((sha, subject, count,
+                      answered = any(_is_answer(c) for c in answer_comments)
+                      if answered:
+                          continue
+                      high_key = (response_sha,
+                                  newest.get("html_url") or "")
+                      if high_key not in high_keys:
+                          high_keys.add(high_key)
+                          high.append((response_sha, subject, count,
                                        newest.get("html_url") or ""))
 
           if without or high:

@@ -280,6 +280,25 @@ jobs:
               )
 
 
+          def review_envelope_is_valid(verdict):
+              """Require every top-level review field instead of defaulting it."""
+              return (
+                  isinstance(verdict, dict)
+                  and bool(verdict)
+                  and verdict.get("verdict") in ("lgtm", "findings")
+                  and "summary" in verdict
+                  and isinstance(verdict["summary"], str)
+                  and "cross_batch_facts" in verdict
+                  and isinstance(verdict["cross_batch_facts"], list)
+                  and all(isinstance(fact, str) and fact.strip()
+                          for fact in verdict["cross_batch_facts"])
+                  and "findings" in verdict
+                  and isinstance(verdict["findings"], list)
+                  and (verdict.get("verdict") != "findings"
+                       or bool(verdict["findings"]))
+              )
+
+
           def parse_reconciliation_response(text, expected_batches, expected_paths):
               """Parse the final body-only review and prove exact input coverage."""
               match = re.search(r"\{.*\}", text, re.S)
@@ -288,12 +307,7 @@ jobs:
                   verdict = json.loads(match.group(0)) if match else {}
               except ValueError:
                   verdict = {}
-              if (not isinstance(verdict, dict) or not verdict
-                      or verdict.get("verdict") not in ("lgtm", "findings")
-                      or not isinstance(verdict.get("findings", []), list)
-                      or not isinstance(verdict.get("summary", ""), str)
-                      or (verdict.get("verdict") == "findings"
-                          and not verdict.get("findings"))):
+              if not review_envelope_is_valid(verdict):
                   verdict, broken = {}, True
               raw_findings = verdict.get("findings") or []
               findings = [finding for finding in raw_findings
@@ -749,7 +763,8 @@ jobs:
               "contracts. Do not discard or rewrite local findings. "
               f"Write the summary and finding notes in {lang}. "
               'Answer with STRICT JSON only: {"verdict":"lgtm"|"findings",'
-              '"summary":"...","findings":[{"path":"...",'
+              '"summary":"...","cross_batch_facts":[],'
+              '"findings":[{"path":"...",'
               '"severity":"high"|"medium"|"low","note":"..."}],'
               '"covered_batches":["batch-1"],"covered_paths":["path"]}. '
               "This pass has no raw diff hunks, so its findings are review-body-only: "
@@ -1253,13 +1268,7 @@ jobs:
                   verdict = json.loads(m.group(0)) if m else {}
               except ValueError:
                   verdict = {}
-              if (not isinstance(verdict, dict) or not verdict
-                      or verdict.get("verdict") not in ("lgtm", "findings")
-                      or not isinstance(verdict.get("findings", []), list)
-                      or not isinstance(verdict.get("summary", ""), str)
-                      # Claiming "findings" and delivering none means truncated.
-                      or (verdict.get("verdict") == "findings"
-                          and not verdict.get("findings"))):
+              if not review_envelope_is_valid(verdict):
                   verdict, parse_kaputt = {}, True
               summary = verdict.get("summary") or text.strip()[:2000]
               # A finding silently dropped is not a clean review either: a non-empty
