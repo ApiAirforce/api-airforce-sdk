@@ -310,6 +310,18 @@ class ReviewGateFixtures(unittest.TestCase):
                 "foo b/bar.txt",
             ),
             (
+                "diff --git a/ leading.txt b/ leading.txt\n"
+                "--- a/ leading.txt\t\n+++ b/ leading.txt\t\n"
+                "@@ -1 +1 @@\n-old\n+new\n",
+                " leading.txt",
+            ),
+            (
+                "diff --git a/trailing.txt  b/trailing.txt \n"
+                "--- a/trailing.txt \t\n+++ b/trailing.txt \t\n"
+                "@@ -1 +1 @@\n-old\n+new\n",
+                "trailing.txt ",
+            ),
+            (
                 'diff --git "a/docs/a\\tb.txt" "b/docs/a\\tb.txt"\n'
                 '--- "a/docs/a\\tb.txt"\n+++ "b/docs/a\\tb.txt"\n'
                 "@@ -1 +1 @@\n-old\n+new\n",
