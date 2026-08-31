@@ -96,7 +96,11 @@ class ReviewGateFixtures(unittest.TestCase):
         cls.batches = helper_namespace(
             REVIEW_WORKFLOW,
             "REVIEW_BATCH_HELPERS",
-            {"MAX_DIFF": 128, "json": json},
+            {
+                "MAX_DIFF": 128,
+                "json": json,
+                "normalize_findings": cls.reviewer["normalize_findings"],
+            },
         )
         cls.size = helper_namespace(REVIEW_WORKFLOW, "REVIEW_SIZE_HELPERS")
 
@@ -887,6 +891,77 @@ class ReviewGateFixtures(unittest.TestCase):
                     )[2]
                 )
 
+    def test_reconciliation_keeps_valid_findings_across_sibling_errors(self):
+        batch_ids = ["batch-1", "batch-2"]
+        paths = ["sdk/a.py", "sdk/b.py"]
+        valid_high = {
+            "path": paths[1],
+            "severity": "high",
+            "note": "consumer still uses the old field",
+        }
+        base = {
+            "verdict": "findings",
+            "summary": "producer and consumer disagree",
+            "cross_batch_facts": ["the response field changed"],
+            "findings": [valid_high],
+            "covered_batches": batch_ids,
+            "covered_paths": paths,
+        }
+
+        def changed(mutator):
+            payload = json.loads(json.dumps(base))
+            mutator(payload)
+            return payload
+
+        cases = [
+            ("missing-verdict", changed(lambda value: value.pop("verdict")), 1),
+            ("wrong-verdict", changed(
+                lambda value: value.__setitem__("verdict", "unknown")), 1),
+            ("missing-summary", changed(lambda value: value.pop("summary")), 1),
+            ("wrong-summary-type", changed(
+                lambda value: value.__setitem__("summary", {})), 1),
+            ("wrong-cross-batch-facts", changed(
+                lambda value: value.__setitem__("cross_batch_facts", {})), 1),
+            ("invalid-second-finding", changed(
+                lambda value: value["findings"].append({
+                    "path": paths[0], "severity": "medium"
+                })), 1),
+            ("missing-batch-coverage", changed(
+                lambda value: value.pop("covered_batches")), 1),
+            ("missing-path-coverage", changed(
+                lambda value: value.pop("covered_paths")), 1),
+            ("inexact-batch-coverage", changed(
+                lambda value: value.__setitem__(
+                    "covered_batches", [batch_ids[0]])), 1),
+            ("inexact-path-coverage", changed(
+                lambda value: value.__setitem__(
+                    "covered_paths", [paths[0], "sdk/extra.py"])), 1),
+            ("duplicate-batch-coverage", changed(
+                lambda value: value.__setitem__(
+                    "covered_batches", batch_ids + [batch_ids[1]])), 1),
+            ("duplicate-path-coverage", changed(
+                lambda value: value.__setitem__(
+                    "covered_paths", paths + [paths[1]])), 1),
+            ("unknown-severity", changed(
+                lambda value: value["findings"].append({
+                    "path": paths[0],
+                    "severity": "critical",
+                    "note": "a second conservative finding",
+                })), 2),
+        ]
+
+        parse = self.batches["parse_reconciliation_response"]
+        for name, payload, expected_count in cases:
+            with self.subTest(case=name):
+                _, findings, broken = parse(
+                    json.dumps(payload), batch_ids, paths)
+                self.assertTrue(broken)
+                self.assertEqual(valid_high, findings[0])
+                self.assertEqual(expected_count, len(findings))
+                self.assertTrue(all(
+                    finding["severity"] == "high" for finding in findings
+                ))
+
     def test_review_envelopes_require_every_top_level_schema_field(self):
         validate = self.batches["review_envelope_is_valid"]
         valid = {
@@ -968,10 +1043,58 @@ class ReviewGateFixtures(unittest.TestCase):
         self.assertEqual(1, len(guards))
         self.assertEqual(1, len(finding_merges))
         self.assertLess(guards[0].end_lineno, finding_merges[0].lineno)
-        self.assertIn(
-            "incomplete = parse_kaputt or bool(dropped) or reconciliation_failed",
-            source,
+        self.assertNotIn(finding_merges[0], list(ast.walk(guards[0])))
+
+        reconciliation_bindings = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name)
+                    and target.id == "reconciliation_failed"
+                    for target in node.targets)
+            and ast.unparse(node.value) == "broken"
+        ]
+        incomplete_bindings = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "incomplete"
+                    for target in node.targets)
+        ]
+        marker_bindings = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "marker"
+                    for target in node.targets)
+        ]
+        failing_guards = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and "reconciliation_failed" in ast.unparse(node.test)
+            and any(
+                isinstance(child, ast.Call)
+                and ast.unparse(child.func) == "sys.exit"
+                and len(child.args) == 1
+                and isinstance(child.args[0], ast.Constant)
+                and child.args[0].value == 1
+                for child in ast.walk(node)
+            )
+        ]
+        self.assertEqual(1, len(reconciliation_bindings))
+        self.assertEqual(1, len(incomplete_bindings))
+        self.assertEqual(1, len(marker_bindings))
+        self.assertEqual(1, len(failing_guards))
+        self.assertEqual(
+            "parse_kaputt or bool(dropped) or reconciliation_failed",
+            ast.unparse(incomplete_bindings[0].value),
         )
+        self.assertEqual(
+            "incomplete_review_marker(head) if incomplete else "
+            "complete_review_marker(head)",
+            ast.unparse(marker_bindings[0].value),
+        )
+        self.assertLess(
+            reconciliation_bindings[0].lineno, finding_merges[0].lineno)
+        self.assertLess(incomplete_bindings[0].lineno, marker_bindings[0].lineno)
+        self.assertLess(marker_bindings[0].lineno, failing_guards[0].lineno)
 
     def test_global_prompt_never_requests_or_guesses_line_numbers(self):
         source = inline_python(REVIEW_WORKFLOW)

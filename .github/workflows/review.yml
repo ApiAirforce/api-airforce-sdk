@@ -307,19 +307,41 @@ jobs:
                   verdict = json.loads(match.group(0)) if match else {}
               except ValueError:
                   verdict = {}
-              if not review_envelope_is_valid(verdict):
+
+              # Validate sibling fields independently. A malformed receipt or
+              # summary keeps reconciliation incomplete, but must not erase a
+              # security finding that can still be validated safely.
+              if not isinstance(verdict, dict) or not verdict:
                   verdict, broken = {}, True
-              raw_findings = verdict.get("findings") or []
-              findings = [finding for finding in raw_findings
-                          if isinstance(finding, dict) and finding.get("path")]
-              if len(findings) != len(raw_findings):
+              if verdict.get("verdict") not in ("lgtm", "findings"):
                   broken = True
+
+              if "summary" not in verdict or not isinstance(
+                      verdict.get("summary"), str):
+                  summary, broken = text.strip()[:2000], True
+              else:
+                  summary = verdict["summary"] or text.strip()[:2000]
+
+              raw_facts = verdict.get("cross_batch_facts")
+              if (not isinstance(raw_facts, list)
+                      or not all(isinstance(fact, str) and fact.strip()
+                                 for fact in raw_facts)):
+                  broken = True
+
+              raw_findings = verdict.get("findings")
+              if not isinstance(raw_findings, list):
+                  raw_findings, broken = [], True
+              findings, invalid_findings = normalize_findings(
+                  raw_findings, require_line=False)
+              broken = broken or invalid_findings
+              if verdict.get("verdict") == "findings" and not raw_findings:
+                  broken = True
+
               if (not _exact_coverage(
                       verdict.get("covered_batches"), expected_batches)
                       or not _exact_coverage(
                           verdict.get("covered_paths"), expected_paths)):
                   broken = True
-              summary = verdict.get("summary") or text.strip()[:2000]
               return summary, findings, broken
 
 
@@ -1250,11 +1272,9 @@ jobs:
               if expected_batches is not None or expected_paths is not None:
                   if expected_batches is None or expected_paths is None:
                       return text.strip()[:2000], [], [], True
-                  summary, raw_findings, broken = parse_reconciliation_response(
+                  summary, findings, broken = parse_reconciliation_response(
                       text, expected_batches, expected_paths)
-                  findings, invalid_findings = normalize_findings(
-                      raw_findings, require_line=False)
-                  return summary, findings, [], broken or invalid_findings
+                  return summary, findings, [], broken
 
               m = re.search(r"\{.*\}", text, re.S)
               # AN UNREADABLE ANSWER IS NOT A CLEAN REVIEW.
