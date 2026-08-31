@@ -1,5 +1,6 @@
 """Regression fixtures for the inline review and promotion-gate helpers."""
 
+import ast
 from pathlib import Path
 import json
 import re
@@ -954,6 +955,19 @@ class ReviewGateFixtures(unittest.TestCase):
         source = inline_python(REVIEW_WORKFLOW)
         self.assertIn("findings += f", source)
         self.assertIn("findings += body_only_findings(global_findings)", source)
+        tree = ast.parse(source)
+        guards = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.If) and ast.unparse(node.test) == "not broken"
+        ]
+        finding_merges = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.AugAssign)
+            and ast.unparse(node.value) == "body_only_findings(global_findings)"
+        ]
+        self.assertEqual(1, len(guards))
+        self.assertEqual(1, len(finding_merges))
+        self.assertLess(guards[0].end_lineno, finding_merges[0].lineno)
         self.assertIn(
             "incomplete = parse_kaputt or bool(dropped) or reconciliation_failed",
             source,

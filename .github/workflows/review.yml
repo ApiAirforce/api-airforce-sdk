@@ -1383,7 +1383,10 @@ jobs:
                           if global_summary:
                               teil_zusammenfassungen.append(
                                   f"(global) {global_summary}")
-                          findings += body_only_findings(global_findings)
+                      # Individually validated global findings stay visible even
+                      # when another response field or coverage receipt is invalid.
+                      # The broken reconciliation still prevents a complete marker.
+                      findings += body_only_findings(global_findings)
           summary = " ".join(teil_zusammenfassungen).strip() or "(no summary)"
 
           sev_de = {"high": "hoch", "medium": "mittel", "low": "niedrig"}
