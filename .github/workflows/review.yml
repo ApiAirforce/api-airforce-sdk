@@ -64,6 +64,8 @@ jobs:
           BASE: ${{ secrets.PULLFROG_BASE_URL }}
           KEY: ${{ secrets.PULLFROG_API_KEY }}
           MODEL: ${{ vars.PULLFROG_MODEL }}
+          CONTEXT: ${{ vars.PULLFROG_CONTEXT }}
+          MAX_OUTPUT: ${{ vars.PULLFROG_MAX_OUTPUT }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUM: ${{ github.event.pull_request.number || inputs.pr }}
@@ -77,7 +79,231 @@ jobs:
           MODEL = os.environ.get("MODEL") or "gpt-5.6"
           REPO = os.environ["REPO"]
           PR = os.environ.get("PR_NUM") or ""
-          MAX_DIFF = 160_000  # chars; ~40k tokens - beyond that the tail is cut, and the review says so
+          # HOW MUCH DIFF FITS IN ONE PASS - DERIVED, NOT DECLARED.
+          #
+          # This was a flat `MAX_DIFF = 160_000`, and the diff was cut with a plain
+          # `diff[:MAX_DIFF]` - mid-line, mid-hunk, without naming what fell away.
+          # Measured on the release review of backend#409 over 28 commits: it ends
+          # with "diff truncated at 160k chars; only the visible part was judged"
+          # and still found a real high finding in what it could see. Nobody knows
+          # what was in the rest.
+          #
+          # The repository already carries the two numbers that decide the size -
+          # `PULLFROG_CONTEXT` and `PULLFROG_MAX_OUTPUT` - and this workflow read
+          # neither. Deriving it means the size follows the model. The chars-per-
+          # token figure is deliberately low: a unified diff is dense in punctuation
+          # and short tokens, so 3.2 under-estimates rather than over-fills, and
+          # over-filling is a hard failure at the relay.
+          CONTEXT = int(os.environ.get("CONTEXT") or 400_000)
+          MAX_OUT = int(os.environ.get("MAX_OUTPUT") or 8_000)
+          # Room for the system prompt, the JSON envelope and the answer.
+          MAX_DIFF = max(40_000, int((CONTEXT - MAX_OUT - 4_000) * 3.2))
+          print(f"context={CONTEXT} max_out={MAX_OUT} -> {MAX_DIFF} chars per batch",
+                file=sys.stderr)
+
+          _AT = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+          DATA_FILE = re.compile(
+              r"(^|/)(locales/[^/]+\.json|package-lock\.json|[^/]*\.lock"
+              r"|[^/]*\.generated\.[a-z]+|[^/]*snapshot[^/]*\.json)$")
+
+          def _split_file(path, body, limit):
+              """A single file bigger than one batch, cut at hunk boundaries.
+          
+              Cutting mid-hunk makes the rest unreadable: the `@@ -a,b +c,d @@`
+              header carries the line numbers, and without it the review cannot
+              name a line any more. So the split happens at `@@`, and the
+              `diff --git` header is repeated on every part.
+              """
+              zeilen = body.splitlines(keepends=True)
+              kopf, rest = [], []
+              for i, l in enumerate(zeilen):
+                  if l.startswith("@@"):
+                      kopf, rest = zeilen[:i], zeilen[i:]
+                      break
+              else:
+                  return [(path, body[:limit])]  # no hunk (a pure rename): indivisible
+              kopftext = "".join(kopf)
+              budget = max(1, limit - len(kopftext))
+
+              # GATHER THE HUNKS FIRST, PACK SECOND.
+              #
+              # The first version decided at the `@@` line whether the next hunk
+              # still fit, using the length of THAT ONE LINE - the hunk behind it
+              # had not been measured yet. Two hunks at 60 % of the budget each
+              # therefore both landed in the same part, and it went out at 120 %.
+              # The reviewer found this on this very change; the test here used 60
+              # small hunks and never built one large enough to show it.
+              #
+              # Not cosmetic: the shrink-on-refusal loop halves the limit and
+              # retries, and a packer that can exceed its own limit by a whole hunk
+              # leaves that loop unable to converge.
+              hunks, cur = [], []
+              for l in rest:
+                  if l.startswith("@@") and cur:
+                      hunks.append("".join(cur))
+                      cur = []
+                  cur.append(l)
+              if cur:
+                  hunks.append("".join(cur))
+
+              # A SINGLE HUNK OVER BUDGET STILL HAS TO GO SOMEWHERE.
+              #
+              # The first attempt repeated the hunk header verbatim on every
+              # continuation, so each part claimed to start at the hunk's first line
+              # and an inline finding on a continuation landed on the wrong line or
+              # was thrown out in validation. The reviewer was right that this does
+              # not have to be a trade-off: the positions can be carried along.
+              # `_kopf_ab` counts what has been consumed and emits a header that is
+              # true for the part it heads.
+              #
+              # The size check now uses the prefix the part will ACTUALLY carry, and
+              # it is applied to the first line of a fresh piece too. Before, a line
+              # after a flush went in unchecked and the first flush computed with the
+              # shorter header - so one long line still produced an oversized part,
+              # and an oversized part can be refused even at the 40,000 floor. Same
+              # defect as the one above, one level down.
+              zerlegt = []
+              for h in hunks:
+                  if len(h) <= budget:
+                      zerlegt.append(h)
+                      continue
+                  zeilen_h = h.splitlines(keepends=True)
+                  kopfzeile = zeilen_h[0]
+                  m_at = _AT.match(kopfzeile)
+                  stueck, laenge = [], 0
+                  alt_ab = neu_ab = 0        # schon verbrauchte Zeilen, alt und neu
+                  alt_h = neu_h = 0          # im laufenden Stueck
+                  erstes = True
+
+                  def _kopf(a, n):
+                      """Der Header fuer einen Teil, der a alte / n neue Zeilen spaeter beginnt."""
+                      if not m_at or (a == 0 and n == 0):
+                          return kopfzeile
+                      # Fehlender Zaehler heisst Laenge 1, nicht Laenge 0.
+                      a1, b1, c1, d1 = (int(x) if x is not None else 1
+                                        for x in m_at.groups()[:4])
+                      return "@@ -%d,%d +%d,%d @@ (continued)\n" % (
+                          a1 + a, max(0, b1 - a), c1 + n, max(0, d1 - n))
+
+                  for l in zeilen_h[1:]:
+                      _marke = l[:1]   # der echte Marker, vor jedem Schneiden
+                      praefix = _kopf(alt_ab, neu_ab)
+                      if laenge + len(l) + len(praefix) > budget:
+                          if stueck:
+                              zerlegt.append(praefix + "".join(stueck))
+                              alt_ab += alt_h
+                              neu_ab += neu_h
+                              stueck, laenge, alt_h, neu_h = [], 0, 0, 0
+                              praefix = _kopf(alt_ab, neu_ab)
+                          # EINE EINZELNE ZEILE, DIE ALLEIN NICHT PASST, WIRD GETEILT.
+                          # Haesslich, aber begrenzt. Sie ungeteilt durchzulassen hiesse
+                          # einen Teil ueber der Grenze zu liefern, und genau daran
+                          # scheitert der Rueckfall.
+                          # DEN MARKER SICHERN, BEVOR GESCHNITTEN WIRD.
+                          #
+                          # Die Schleife unten schneidet vorne von `l` ab. Danach steht dort
+                          # Nutzinhalt, und `l[:1]` haelt ein beliebiges Zeichen fuer den
+                          # Diff-Marker - die Zeile wird gar nicht oder auf der falschen Seite
+                          # gezaehlt, und jede folgende Fortsetzung sitzt wieder daneben.
+                          _marke = l[:1]
+                          while len(l) + len(praefix) > budget:
+                              platz = max(1, budget - len(praefix))
+                              zerlegt.append(praefix + l[:platz])
+                              l = l[platz:]
+                      stueck.append(l)
+                      laenge += len(l)
+                      k = _marke
+                      if k in (" ", "-"):
+                          alt_h += 1
+                      if k in (" ", "+"):
+                          neu_h += 1
+                  if stueck:
+                      zerlegt.append(_kopf(alt_ab, neu_ab) + "".join(stueck))
+
+              teile, cur, used = [], [], 0
+              for h in zerlegt:
+                  if cur and used + len(h) > budget:
+                      teile.append((path, kopftext + "".join(cur)))
+                      cur, used = [], 0
+                  cur.append(h)
+                  used += len(h)
+              if cur:
+                  teile.append((path, kopftext + "".join(cur)))
+              return teile or [(path, body[:limit])]
+
+
+          def budget_batches(raw_diff, limit=MAX_DIFF):
+              """Split the diff into batches of at most `limit` chars each.
+          
+              THE OLD VERSION DROPPED WHAT DID NOT FIT and named it. That is how
+              161 of 589 reviews across the two repos - more than a quarter - went
+              out having seen only part of the change. A gate that checks "a review
+              exists" turns green on one of those, and the half nobody looked at is
+              indistinguishable from a half with no defects.
+          
+              Now every batch gets its own pass and the findings are merged. Only
+              the wall-clock cap can still leave something out, and the caller says
+              so by name when it does.
+          
+              The order stays: code first, data files last. If time does run out,
+              what is missing is a translation file rather than Rust.
+              """
+              chunks, cur, path = [], [], None
+              for line in raw_diff.splitlines(keepends=True):
+                  if line.startswith("diff --git "):
+                      if cur:
+                          chunks.append((path, "".join(cur)))
+                      cur = [line]
+                      path = line.rstrip("\n").split(" b/")[-1]
+                  else:
+                      cur.append(line)
+              if cur:
+                  chunks.append((path, "".join(cur)))
+              if not chunks:
+                  return [[(None, raw_diff[:limit])]] if raw_diff.strip() else []
+              chunks.sort(key=lambda c: 1 if DATA_FILE.search(c[0] or "") else 0)
+              flach = []
+              for p, body in chunks:
+                  flach.extend(_split_file(p, body, limit) if len(body) > limit else [(p, body)])
+              stapel, cur, used = [], [], 0
+              for p, body in flach:
+                  if cur and used + len(body) > limit:
+                      stapel.append(cur)
+                      cur, used = [], 0
+                  cur.append((p, body))
+                  used += len(body)
+              if cur:
+                  stapel.append(cur)
+              return stapel
+
+
+          class _ZuGross(Exception):
+              """The upstream refused the request for its SIZE, not its content.
+          
+              `PULLFROG_CONTEXT` is a declared number, not a measured one - the
+              catalog carries no context length for this model at all, so
+              whatever stands in the variable is somebody's belief. Believing it
+              too hard would turn one wrong variable into every review failing
+              hard on every large diff. So a size refusal halves the batch and
+              tries again instead of ending the run.
+              """
+          
+          
+          def _ist_zu_gross(text):
+              """Does this error say the request was too large?
+          
+              Matched on the words, because every gateway words it differently
+              and none of them carry a machine-readable code for it. Over-
+              matching costs a needless retry at half the size; under-matching
+              costs the whole review.
+              """
+              t = (text or "").lower()
+              return any(w in t for w in (
+                  "context length", "context_length", "context window",
+                  "maximum context", "too many tokens", "too large",
+                  "reduce the length", "input is too long", "prompt is too long",
+                  "exceeds", "request_too_large", "string_above_max_length"))
 
           if not KEY or not BASE:
               # Fork PRs get no secrets. That is correct and not an error - but it
@@ -106,12 +332,16 @@ jobs:
                   sys.exit(0)
 
           diff = gh(f"repos/{REPO}/pulls/{PR}", "-H", "Accept: application/vnd.github.v3.diff", raw=True)
-          truncated = len(diff) > MAX_DIFF
-          if truncated:
-              diff = diff[:MAX_DIFF]
-          if not diff.strip():
+          # THE TAIL IS NO LONGER THROWN AWAY.
+          #
+          # `diff = diff[:MAX_DIFF]` cut mid-line and mid-hunk and named nothing.
+          # The review then said "judge what is visible" and passed as a completed
+          # review, which is the same shape as a review that found nothing.
+          stapel = budget_batches(diff)
+          if not stapel:
               print("Empty diff - nothing to review.")
               sys.exit(0)
+          print(f"diff split into {len(stapel)} batch(es)", file=sys.stderr)
 
           # Public repository -> English (community-facing); internal -> German.
           english = REPO.endswith("api-airforce-sdk")
@@ -132,9 +362,13 @@ jobs:
               '- "line" must be a line number in the NEW version of the file, taken from '
               "the diff hunk headers. Omit findings you are not confident about."
           )
-          user = (f"PR #{PR} – {pr.get('title','')!s}\n\n"
-                  + ("NOTE: diff truncated at 160k chars; judge what is visible.\n\n" if truncated else "")
-                  + diff)
+          def stapel_text(nr, gesamt, teile):
+              """The user message for one batch."""
+              kopf = f"PR #{PR} - {pr.get('title','')!s}"
+              if gesamt > 1:
+                  kopf += (f"\n\nThis is part {nr} of {gesamt} of the diff. Judge only"
+                           " what is below; the other parts are reviewed separately.")
+              return kopf + "\n\n" + "".join(b for _, b in teile)
 
           class _RelayFehler(Exception):
               """Das Relay meldete einen Fehler - mit HTTP 200 im Rumpf.
@@ -406,11 +640,6 @@ jobs:
                   raise _RelayFehler(*_f)
               return _ganz
 
-          payload = {"model": MODEL,
-                     "messages": [{"role": "system", "content": system},
-                                  {"role": "user", "content": user}],
-                     "max_completion_tokens": 8000,
-                     "reasoning_effort": "max"}
           # WIEDERHOLUNG BEI FLUECHTIGEN FEHLERN. Gemessen am 13.08.: eine
           # durchsicht scheiterte an HTTP 502 "Upstream service temporarily
           # unavailable" - aus UNSEREM eigenen relay. Ohne wiederholung erbt die
@@ -429,6 +658,18 @@ jobs:
           # verhindern soll. `review-push.yml` bremst so seit dem 23.08.;
           # seit der PR-Pflicht ist DIESE Datei der Hauptweg.
           AUFRUF_GRENZE = 900
+          # A STREAM THAT DIES AFTER THIS LONG IS TREATED AS A SIZE REFUSAL.
+          #
+          # Measured on a real run: the whole diff fitted into ONE batch, and that
+          # is what killed it - "Upstream HTTP/2 stream failed" twice, about
+          # fifteen minutes each, then the deadline. `_ist_zu_gross` reads WORDS,
+          # and an abort carries none, because it is not a refusal. So the shrink
+          # fallback built for exactly this never fired, and the transient ladder
+          # sent the same oversized request again.
+          #
+          # The text cannot separate "the network hiccuped" from "that was too much
+          # at once". The elapsed time can.
+          ABRISS_IST_GROESSE = 600  # seconds
           SCHLUSS = time.monotonic() + 34 * 60
 
           def zeit_fuer_neuen_versuch(pause):
@@ -447,119 +688,229 @@ jobs:
                   return True
               print(f"keine Restzeit mehr fuer {was} - Schluss", file=sys.stderr)
               sys.exit(1)
-          out = None
-          while out is None:
-              try:
-                  out = call(payload)
-              except _RelayFehler as e:
-                  # HTTP 200, Fehler im Rumpf. Ein Ratenlimit ist fluechtig
-                  # und gehoert auf die Leiter - ein Auth- oder Anfrage-
-                  # fehler aendert sich durch Warten nicht: 85 s Pause fuer
-                  # dreimal dieselbe Antwort, dann erst der laute Tod.
-                  # Der TYP entscheidet, nicht der Text - Fehlertexte sind
-                  # frei formuliert, eine Wortsuche darin klassifiziert
-                  # frueher oder spaeter falsch. Unbekannte Typen bleiben
-                  # auf der Leiter; die endet nach drei Versuchen laut.
-                  # `invalid_request_error` NICHT sofort fatal: der
-                  # HTTP-400-Zweig darunter besitzt eine Reparatur
-                  # (reasoning_effort max -> high -> ohne). Meldet das
-                  # Relay denselben Fall als 200er-Rumpf, gehoert ihm
-                  # dieselbe Reparatur - erst danach ist er dauerhaft.
-                  if getattr(e, "typ", "") == "invalid_request_error":
-                      _stufe = payload.get("reasoning_effort")
-                      if _stufe == "max":
-                          wechsel_passt_noch('high')
-                          payload["reasoning_effort"] = "high"
-                          print("relay meldete invalid_request (HTTP 200) - "
-                                "weiter mit reasoning_effort=high",
+          def durchsicht(user_text):
+              """One pass over one batch. Returns (summary, findings, kaputt).
+          
+              The retry ladder above stays OUTSIDE on purpose. It carries
+              `SCHLUSS`, the wall-clock deadline, and pulling that in here would
+              restart it per batch - three batches would each get 34 minutes
+              against a 40-minute cap, the job would be cancelled mid-call and
+              leave nothing at all. That is exactly what happened in the frontend
+              version of this change before it was caught.
+              """
+              payload = {"model": MODEL,
+                         "messages": [{"role": "system", "content": system},
+                                      {"role": "user", "content": user_text}],
+                         "max_completion_tokens": MAX_OUT,
+                         "reasoning_effort": "max"}
+              out = None
+              while out is None:
+                  try:
+                      _versuch_ab = time.monotonic()
+                      out = call(payload)
+                  except _RelayFehler as e:
+                      # HTTP 200, Fehler im Rumpf. Ein Ratenlimit ist fluechtig
+                      # und gehoert auf die Leiter - ein Auth- oder Anfrage-
+                      # fehler aendert sich durch Warten nicht: 85 s Pause fuer
+                      # dreimal dieselbe Antwort, dann erst der laute Tod.
+                      # Der TYP entscheidet, nicht der Text - Fehlertexte sind
+                      # frei formuliert, eine Wortsuche darin klassifiziert
+                      # frueher oder spaeter falsch. Unbekannte Typen bleiben
+                      # auf der Leiter; die endet nach drei Versuchen laut.
+                      # `invalid_request_error` NICHT sofort fatal: der
+                      # HTTP-400-Zweig darunter besitzt eine Reparatur
+                      # (reasoning_effort max -> high -> ohne). Meldet das
+                      # Relay denselben Fall als 200er-Rumpf, gehoert ihm
+                      # dieselbe Reparatur - erst danach ist er dauerhaft.
+                      if getattr(e, "typ", "") == "invalid_request_error":
+                          _stufe = payload.get("reasoning_effort")
+                          if _stufe == "max":
+                              wechsel_passt_noch('high')
+                              payload["reasoning_effort"] = "high"
+                              print("relay meldete invalid_request (HTTP 200) - "
+                                    "weiter mit reasoning_effort=high",
+                                    file=sys.stderr)
+                              continue
+                          if payload.pop("reasoning_effort", None) is not None:
+                              wechsel_passt_noch('ohne reasoning_effort')
+                              print("relay meldete invalid_request (HTTP 200) - "
+                                    "weiter ohne reasoning_effort",
+                                    file=sys.stderr)
+                              continue
+                      # A SIZE REFUSAL IS NOT A PERMANENT FAILURE, IT IS A HINT.
+                      #
+                      # Passed upward so the batch is cut finer and sent again, instead of
+                      # ending the whole run. Without this the class below is dead code: the
+                      # shrink loop exists, and nothing ever reaches it.
+                      if _ist_zu_gross(str(e)):
+                          raise _ZuGross(str(e))
+                      # No words, but it ran long: treat it as a size hint rather than
+                      # retrying the same oversized batch until the deadline eats the run.
+                      _gelaufen = time.monotonic() - _versuch_ab
+                      if _gelaufen > ABRISS_IST_GROESSE:
+                          raise _ZuGross(f"stream failed after {_gelaufen:.0f}s - "
+                                         f"treating as too large: {e!s:.120}")
+                      _DAUERHAFT = ("authentication_error", "invalid_api_key",
+                                    "invalid_request_error", "permission_error",
+                                    "not_found_error", "insufficient_quota")
+                      if getattr(e, "typ", "") in _DAUERHAFT:
+                          print(f"Model call failed: relay meldete {e!s} "
+                                f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
+                                f"Wiederholung", file=sys.stderr)
+                          sys.exit(1)
+                      if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
+                          p = PAUSEN.pop(0)
+                          print(f"relay meldete \"{e}\" (HTTP 200) - neuer versuch in {p}s",
                                 file=sys.stderr)
+                          time.sleep(p)
                           continue
-                      if payload.pop("reasoning_effort", None) is not None:
-                          wechsel_passt_noch('ohne reasoning_effort')
-                          print("relay meldete invalid_request (HTTP 200) - "
-                                "weiter ohne reasoning_effort",
-                                file=sys.stderr)
-                          continue
-                  _DAUERHAFT = ("authentication_error", "invalid_api_key",
-                                "invalid_request_error", "permission_error",
-                                "not_found_error", "insufficient_quota")
-                  if getattr(e, "typ", "") in _DAUERHAFT:
-                      print(f"Model call failed: relay meldete {e!s} "
-                            f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
-                            f"Wiederholung", file=sys.stderr)
+                      print(f"Model call failed: relay meldete {e!s} bei HTTP 200",
+                            file=sys.stderr)
                       sys.exit(1)
-                  if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
-                      p = PAUSEN.pop(0)
-                      print(f"relay meldete \"{e}\" (HTTP 200) - neuer versuch in {p}s",
-                            file=sys.stderr)
-                      time.sleep(p)
-                      continue
-                  print(f"Model call failed: relay meldete {e!s} bei HTTP 200",
+                  except urllib.error.HTTPError as e:
+                      # THE REASON IS IN THE BODY, NOT IN THE STATUS CODE.
+                      #
+                      # Relays answer an oversized request with 400 or 413 and put the actual
+                      # reason in the payload. Reading only `e.code` cannot tell "too large"
+                      # from "unknown field", and the two need opposite responses: resplit
+                      # versus drop the field.
+                      _leib = ""
+                      try:
+                          _leib = e.read().decode("utf-8", "replace")[:2000]
+                      except Exception:
+                          pass
+                      if _ist_zu_gross(_leib) or _ist_zu_gross(getattr(e, "reason", "")):
+                          raise _ZuGross(_leib or str(e))
+                      # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
+                      # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
+                      # der drei versuche zu verbrauchen.
+                      if e.code == 400:
+                          stufe = payload.get("reasoning_effort")
+                          if stufe == "max":
+                              wechsel_passt_noch('high')
+                              payload["reasoning_effort"] = "high"
+                              print("relay kennt reasoning_effort=max nicht - weiter mit high",
+                                    file=sys.stderr)
+                              continue
+                          if payload.pop("reasoning_effort", None) is not None:
+                              wechsel_passt_noch('ohne reasoning_effort')
+                              print("relay kennt reasoning_effort nicht - weiter ohne das feld",
+                                    file=sys.stderr)
+                              continue
+                      if e.code in FLUECHTIG and PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
+                          p = PAUSEN.pop(0)
+                          print(f"relay antwortete HTTP {e.code} - neuer versuch in {p}s",
+                                file=sys.stderr)
+                          time.sleep(p)
+                          continue
+                      # A reviewer that could not run must fail loudly, not pass as clean.
+                      print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
+                      sys.exit(1)
+                  # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
+                  # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
+                  # Vererbung ist ConnectionResetError < ConnectionError < OSError -
+                  # `urllib.error.URLError` steht darin NICHT und `TimeoutError` auch
+                  # nicht. Der Abriss lief deshalb an dieser Leiter VORBEI, obwohl sie
+                  # genau dafuer gebaut ist: Rueckverfolgungsbericht, Ende, roter Haken.
+                  # Gemessen an acht gleichzeitig geoeffneten PRs - sieben Durchsichten
+                  # starben so, keine einzige hat eine Wartezeit oder ein Ersatzmodell
+                  # auch nur probiert.
+                  #
+                  # Das ist nicht bloss ein roter Haken: das Tor nach `test` verlangt je
+                  # Commit eine Durchsicht. Ein Abriss haelt also die Auslieferung ALLER
+                  # Fenster an, bis jemand von Hand neu startet.
+                  #
+                  # ConnectionError und nicht OSError - Letzteres saugt auch Datei- und
+                  # Rechtefehler ein und wiederholt sie als waeren es Netzfehler.
+                  except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+                      if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
+                          p = PAUSEN.pop(0)
+                          print(f"netzfehler ({getattr(e, 'reason', None) or type(e).__name__}) - neuer versuch in {p}s", file=sys.stderr)
+                          time.sleep(p)
+                          continue
+                      print(f"Model call failed: {getattr(e, 'reason', None) or type(e).__name__}", file=sys.stderr)
+                      sys.exit(1)
+
+              text = out["choices"][0]["message"]["content"] or ""
+              usage = out.get("usage", {})
+              print(f"model={out.get('model')} tokens: {usage}")
+
+              m = re.search(r"\{.*\}", text, re.S)
+              # AN UNREADABLE ANSWER IS NOT A CLEAN REVIEW.
+              #
+              # It used to become `{}`, then an empty finding list, and the run
+              # posted its normal marker and exited green. With batches that is worse
+              # than before: of N parts it is exactly the broken one that disappears
+              # while the gate opens.
+              parse_kaputt = False
+              try:
+                  verdict = json.loads(m.group(0)) if m else {}
+              except ValueError:
+                  verdict = {}
+              if (not isinstance(verdict, dict) or not verdict
+                      or verdict.get("verdict") not in ("lgtm", "findings")
+                      or not isinstance(verdict.get("findings", []), list)
+                      or not isinstance(verdict.get("summary", ""), str)
+                      # Claiming "findings" and delivering none means truncated.
+                      or (verdict.get("verdict") == "findings"
+                          and not verdict.get("findings"))):
+                  verdict, parse_kaputt = {}, True
+              summary = verdict.get("summary") or text.strip()[:2000]
+              # A finding silently dropped is not a clean review either: a non-empty
+              # list of nulls or objects without `path` passes the type check and the
+              # comprehension then discards them without a word.
+              _roh = verdict.get("findings") or []
+              findings = [f for f in _roh if isinstance(f, dict) and f.get("path")]
+              if len(findings) != len(_roh):
+                  parse_kaputt = True
+              return summary, findings, parse_kaputt
+
+          # EVERY BATCH GETS ITS OWN PASS, AND EACH CARRIES ITS OWN LIMIT.
+          #
+          # A refused batch is resplit at half ITS limit and pushed back to the
+          # front; the batches already paid for stay done. A single global limit
+          # would let a later refusal of an older, larger sibling hit the floor
+          # guard and end the run - although that batch was never cut small.
+          #
+          # The deadline is checked from the second CALL, not the second batch:
+          # after a refusal the first batch of the next pass is not the safe first
+          # call of the run any more.
+          # Same wording as frontend and backend: the batches are drawn fresh
+          # here. Reading from `stapel` would save one pass but leave a seventh
+          # variant of one loop in the tree, and the diff is already in memory.
+          offen = [(MAX_DIFF, t) for t in budget_batches(diff, MAX_DIFF)]
+          gesamt = len(offen)
+          teil_zusammenfassungen, findings, dropped = [], [], []
+          parse_kaputt = False
+          nr = 0
+          erster_aufruf = True
+          while offen:
+              b_grenze, teile = offen.pop(0)
+              nr += 1
+              if not erster_aufruf and not zeit_fuer_neuen_versuch(0):
+                  dropped += [p for p, _ in teile if p]
+                  continue
+              erster_aufruf = False
+              try:
+                  s, f, k = durchsicht(stapel_text(nr, gesamt, teile))
+              except _ZuGross as e:
+                  if b_grenze <= 40_000:
+                      print("upstream refuses even the smallest batch", file=sys.stderr)
+                      sys.exit(1)
+                  feiner_grenze = max(40_000, b_grenze // 2)
+                  print(f"upstream refused a {b_grenze} char batch ({e!s:.120}) - "
+                        f"resplitting it at {feiner_grenze}, {nr - 1} batch(es) done",
                         file=sys.stderr)
-                  sys.exit(1)
-              except urllib.error.HTTPError as e:
-                  # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
-                  # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
-                  # der drei versuche zu verbrauchen.
-                  if e.code == 400:
-                      stufe = payload.get("reasoning_effort")
-                      if stufe == "max":
-                          wechsel_passt_noch('high')
-                          payload["reasoning_effort"] = "high"
-                          print("relay kennt reasoning_effort=max nicht - weiter mit high",
-                                file=sys.stderr)
-                          continue
-                      if payload.pop("reasoning_effort", None) is not None:
-                          wechsel_passt_noch('ohne reasoning_effort')
-                          print("relay kennt reasoning_effort nicht - weiter ohne das feld",
-                                file=sys.stderr)
-                          continue
-                  if e.code in FLUECHTIG and PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
-                      p = PAUSEN.pop(0)
-                      print(f"relay antwortete HTTP {e.code} - neuer versuch in {p}s",
-                            file=sys.stderr)
-                      time.sleep(p)
-                      continue
-                  # A reviewer that could not run must fail loudly, not pass as clean.
-                  print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
-                  sys.exit(1)
-              # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
-              # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
-              # Vererbung ist ConnectionResetError < ConnectionError < OSError -
-              # `urllib.error.URLError` steht darin NICHT und `TimeoutError` auch
-              # nicht. Der Abriss lief deshalb an dieser Leiter VORBEI, obwohl sie
-              # genau dafuer gebaut ist: Rueckverfolgungsbericht, Ende, roter Haken.
-              # Gemessen an acht gleichzeitig geoeffneten PRs - sieben Durchsichten
-              # starben so, keine einzige hat eine Wartezeit oder ein Ersatzmodell
-              # auch nur probiert.
-              #
-              # Das ist nicht bloss ein roter Haken: das Tor nach `test` verlangt je
-              # Commit eine Durchsicht. Ein Abriss haelt also die Auslieferung ALLER
-              # Fenster an, bis jemand von Hand neu startet.
-              #
-              # ConnectionError und nicht OSError - Letzteres saugt auch Datei- und
-              # Rechtefehler ein und wiederholt sie als waeren es Netzfehler.
-              except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-                  if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
-                      p = PAUSEN.pop(0)
-                      print(f"netzfehler ({getattr(e, 'reason', None) or type(e).__name__}) - neuer versuch in {p}s", file=sys.stderr)
-                      time.sleep(p)
-                      continue
-                  print(f"Model call failed: {getattr(e, 'reason', None) or type(e).__name__}", file=sys.stderr)
-                  sys.exit(1)
-
-          text = out["choices"][0]["message"]["content"] or ""
-          usage = out.get("usage", {})
-          print(f"model={out.get('model')} tokens: {usage}")
-
-          m = re.search(r"\{.*\}", text, re.S)
-          try:
-              verdict = json.loads(m.group(0)) if m else {}
-          except ValueError:
-              verdict = {}
-          summary = verdict.get("summary") or text.strip()[:2000]
-          findings = [f for f in (verdict.get("findings") or [])
-                      if isinstance(f, dict) and f.get("path")]
+                  feiner = budget_batches("".join(b for _, b in teile), feiner_grenze)
+                  offen[0:0] = [(feiner_grenze, t) for t in feiner]
+                  gesamt = nr - 1 + len(offen)
+                  nr -= 1
+                  continue
+              parse_kaputt = parse_kaputt or k
+              if s:
+                  teil_zusammenfassungen.append(s if gesamt == 1 else f"({nr}/{gesamt}) {s}")
+              findings += f
+          summary = " ".join(teil_zusammenfassungen).strip() or "(no summary)"
 
           sev_de = {"high": "hoch", "medium": "mittel", "low": "niedrig"}
           title = "## Automated review" if english else "## Automatische Durchsicht"
@@ -573,9 +924,28 @@ jobs:
                   lines.append(f"| {i} | `{f['path']}` | {f.get('line','?')} | "
                                f"{sev if english else sev_de.get(sev, sev)} | {f.get('note','')} |")
               lines.append("")
-          if truncated:
-              lines.append("_Diff bei 160k Zeichen gekappt; nur der sichtbare Teil wurde beurteilt._"
-                           if not english else "_Diff truncated at 160k chars; only the visible part was judged._")
+          # NAMING WHAT WAS LEFT OUT IS THE POINT.
+          #
+          # "truncated at 160k chars" reads like a footnote and says nothing about
+          # WHAT is missing. Only the wall-clock cap can leave anything out now, and
+          # the files it left are listed. Split files are deduplicated first: one
+          # file across several parts would otherwise fill the twelve slots and
+          # crowd out the other names.
+          if dropped:
+              dropped = list(dict.fromkeys(dropped))
+              names = ", ".join(f"`{p}`" for p in dropped[:12])
+              rest = f" (+{len(dropped)-12} more)" if len(dropped) > 12 else ""
+              lines.append(
+                  f"_NICHT beurteilt, weil die Zeitkappe erreicht war: {names}{rest}._"
+                  if not english else
+                  f"_NOT reviewed - the wall-clock cap was reached: {names}{rest}._")
+          if parse_kaputt:
+              lines.append(
+                  "> **Die Modellantwort war kein verwertbares JSON.** Strukturierte "
+                  "Befunde koennen fehlen. Der Lauf faellt deshalb durch."
+                  if not english else
+                  "> **The model answer was not usable JSON.** Structured findings may "
+                  "be missing. The run fails for that reason.")
           lines += ["", f"_{MODEL} · api.airforce_", marker]
           body = "\n".join(lines)
 
@@ -601,5 +971,28 @@ jobs:
           if not ok:
               print(f"posting review failed: {err[:400]}", file=sys.stderr)
               sys.exit(1)
-          print(f"review posted: {len(findings)} finding(s), verdict={verdict.get('verdict','?')}")
+          # THERE IS NO ONE VERDICT ANY MORE - EVERY BATCH BRINGS ITS OWN.
+          #
+          # This line named `verdict`, which since the rework lives inside
+          # `durchsicht` and does not exist out here. Left as it was it would be a
+          # NameError in the very last statement: after the review was posted, so
+          # with the work finished and the run red for no reason a reader could see.
+          print(f"review posted: {len(findings)} finding(s) over {gesamt} batch(es)")
+
+          # POSTED, BUT INCOMPLETE - FAIL LOUDLY INSTEAD OF LOOKING CLEAN.
+          #
+          # This repo had no such check at all: the run posted whatever it had and
+          # ended green, whether the model answer was unreadable or whole batches
+          # were never sent. A run that found nothing and a run that did not look
+          # were indistinguishable from outside - which is the shape the batching
+          # rework exists to remove.
+          if parse_kaputt or dropped:
+              if dropped:
+                  print(f"{len(dropped)} file(s) never reviewed - the wall-clock cap "
+                        "was reached. Failing so an incomplete review does not read "
+                        "as a clean one.", file=sys.stderr)
+              if parse_kaputt:
+                  print("Model answer was not parsable JSON - the review is posted "
+                        "but incomplete.", file=sys.stderr)
+              sys.exit(1)
           PYEOF

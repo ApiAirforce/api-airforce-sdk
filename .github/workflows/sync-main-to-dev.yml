@@ -1,18 +1,18 @@
-# Haelt dev auf dem Stand von main — automatisch, nach jedem Push auf main.
+# Keeps dev level with main — automatically, after every push to main.
 #
-# WARUM ES DAS GIBT (gemessen am 17.08.2026): dev hing 3 Commits HINTER main.
-# Nicht aus Nachlaessigkeit, sondern mechanisch — auf main schreiben Quellen,
-# die dev nie sieht:
-#   - Releases und CI-Korrekturen werden direkt auf main gemacht
-# Entwickelt wird auf dev. Zurueck gemerged hat es nie jemand, also baute jeder
-# neue Zweig auf einem dev auf, das den laufenden prod-Stand nicht kannte.
+# WHY THIS EXISTS (measured 2026-08-17): dev was 3 commits BEHIND main.
+# Not out of sloppiness but mechanically — main is written by sources dev
+# never sees:
+#   - releases and CI fixes are made directly on main
+# Development happens on dev. Nobody ever merged back, so every new branch was
+# built on a dev that did not know the running prod state.
 #
-# Diese Richtung (main -> dev) ist die ungefaehrliche: dev deployt nur die
-# dev-Umgebung. Die Gegenrichtung (dev -> main) ist ein Produktions-Release
-# und bleibt bewusst Handarbeit — sie wird hier NICHT automatisiert.
+# This direction (main -> dev) is the harmless one: dev only deploys the dev
+# environment. The opposite direction (dev -> main) is a production release and
+# stays deliberately manual — it is NOT automated here.
 #
-# Bei einem Konflikt wird NICHT still abgebrochen: der Job legt einen PR an,
-# damit die Divergenz sichtbar bleibt statt wieder anzuwachsen.
+# On a conflict this does NOT fail silently: the job opens a PR so the
+# divergence stays visible instead of growing back.
 
 name: sync main to dev
 
@@ -38,100 +38,100 @@ jobs:
           fetch-depth: 0
           ref: dev
 
-      - name: Identitaet fuer den Merge-Commit
+      - name: Identity for the merge commit
         run: |
           git config user.name  "airforce-sync-bot"
           git config user.email "sync-bot@api.airforce"
 
-      - name: main nach dev mergen
+      - name: Merge main into dev
         id: merge
         env:
-          # NEU (25.08.2026): der Schritt oeffnet jetzt selbst einen PR und
-          # braucht dafuer eine Anmeldung. Ohne diese Zeile bricht `gh` mit
-          # "To use GitHub CLI ... set the GH_TOKEN environment variable" ab.
+          # NEW (2026-08-25): this step now opens a PR itself and needs
+          # credentials for that. Without this line `gh` aborts with
+          # "To use GitHub CLI ... set the GH_TOKEN environment variable".
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
           git fetch origin main dev
           AHEAD=$(git rev-list --count origin/dev..origin/main)
-          echo "main ist $AHEAD Commits vor dev"
+          echo "main is $AHEAD commits ahead of dev"
           if [ "$AHEAD" -eq 0 ]; then
-            echo "nichts zu tun"
+            echo "nothing to do"
             echo "status=noop" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if git merge --no-edit origin/main -m "chore: sync dev with main ($AHEAD commits)"; then
-            # KEIN DIREKT-PUSH AUF `dev` MEHR. `dev` nimmt seit dem 25.08.2026
-            # nur noch gemergte PRs an; ein Push von hier wuerde mit GH013
-            # abgewiesen und dieser Abgleich liefe stuendlich rot. Genau hier
-            # waere der Ausfall am teuersten - dies ist die einzige Stelle, die
-            # `dev` und `main` zusammenhaelt.
+            # NO MORE DIRECT PUSH TO `dev`. Since 2026-08-25 `dev` only accepts
+            # merged PRs; a push from here would be rejected with GH013 and
+            # this sync would run red every hour. This is exactly where the
+            # outage would be most expensive - it is the only thing holding
+            # `dev` and `main` together.
             #
-            # Derselbe Inhalt, nur ueber einen PR, der sofort gemergt wird. Der
-            # PR ist kein Tor, sondern die Spur: man sieht hinterher, was der
-            # Abgleich mitgenommen hat. Beim Direkt-Push stand dort nur ein
-            # Commit von einem Bot.
+            # Same content, just through a PR that is merged immediately. The
+            # PR is not a gate, it is the trail: afterwards you can see what
+            # the sync carried along. A direct push left nothing there but a
+            # commit from a bot.
             #
-            # EIGENER ZWEIG, nicht der des Konflikt-PRs weiter unten: laege
-            # dort gerade eine Aufloesung von Hand, wuerde ein Force-Push sie
-            # unter der laufenden Arbeit wegziehen.
-            AUTO_ZWEIG=sync/auto-main-to-dev
-            ZIEL_SHA=$(git rev-parse HEAD)
-            git push -f origin "HEAD:refs/heads/$AUTO_ZWEIG"
-            # NUR EIN PR AUS DIESEM REPO UND MIT GENAU DIESEM COMMIT. Befund `hoch`
-            # der Durchsicht, 25.08.2026, in drei Repos gleichzeitig gemeldet:
-            # `gh pr list --head <name>` filtert nur den NAMEN des Head-Refs, nicht
-            # dessen Quell-Repository. Ein Fork kann einen offenen PR nach `dev` mit
-            # demselben Zweignamen anlegen - dann waere die Nummer schon gesetzt, der
-            # eigene PR wuerde uebersprungen, und der privilegierte Merge unten holte
-            # fremden Inhalt herein.
-            # Dazu: der feste Zweig ist force-pushbar. Zwischen unserem Push und dem
-            # Merge kann ihn jeder Schreibberechtigte verschieben.
-            # Deshalb beides - `isCrossRepository == false` und der Abgleich gegen
-            # unseren eigenen Kopf. `--match-head-commit` weiter unten ist der
-            # staerkere Riegel: der hier prueft eine Momentaufnahme, jener laesst
-            # GitHub im Moment des Merges selbst pruefen.
-            NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open \
+            # ITS OWN BRANCH, not the one of the conflict PR below: if a
+            # resolution were being written there by hand, a force push would
+            # pull it out from under the work in progress.
+            AUTO_BRANCH=sync/auto-main-to-dev
+            TARGET_SHA=$(git rev-parse HEAD)
+            git push -f origin "HEAD:refs/heads/$AUTO_BRANCH"
+            # ONLY A PR FROM THIS REPO AND WITH EXACTLY THIS COMMIT. Finding of
+            # severity `hoch` from the review, 2026-08-25, reported in three repos
+            # at once: `gh pr list --head <name>` filters only the NAME of the head
+            # ref, not its source repository. A fork can open a PR to `dev` with the
+            # same branch name - the number would already be set, our own PR would
+            # be skipped, and the privileged merge below would pull in foreign
+            # content.
+            # On top of that: the fixed branch is force-pushable. Between our push
+            # and the merge anyone with write access can move it.
+            # Hence both - `isCrossRepository == false` and the comparison against
+            # our own head. `--match-head-commit` further down is the stronger
+            # bolt: this one checks a snapshot, that one has GitHub check at the
+            # moment of the merge itself.
+            NR=$(gh pr list --base dev --head "$AUTO_BRANCH" --state open \
                    --json number,isCrossRepository,headRefOid \
-                   --jq ".[] | select(.isCrossRepository == false and .headRefOid == \"$ZIEL_SHA\") | .number" \
+                   --jq ".[] | select(.isCrossRepository == false and .headRefOid == \"$TARGET_SHA\") | .number" \
                  | head -1)
             if [ -z "$NR" ]; then
-              # Die Nummer NICHT aus der Ausgabe von `pr create` schneiden - wer
-              # aus der URL alle Ziffern zieht, klebt die aus dem Repo-Namen mit
-              # an. Anlegen, dann sauber nachfragen.
-              gh pr create --base dev --head "$AUTO_ZWEIG" \
-                --title "chore: dev mit main abgleichen ($AHEAD Commits)" \
-                --body "Automatischer Abgleich von main nach dev, $AHEAD Commit(s). Wird sofort gemergt - der PR ist die Spur, kein Tor."
-              NR=$(gh pr list --base dev --head "$AUTO_ZWEIG" --state open \
+              # Do NOT cut the number out of the output of `pr create` - pulling
+              # every digit from the URL glues on the ones from the repo name as
+              # well. Create it, then ask cleanly.
+              gh pr create --base dev --head "$AUTO_BRANCH" \
+                --title "chore: sync dev with main ($AHEAD commits)" \
+                --body "Automatic sync from main to dev, $AHEAD commit(s). Merged immediately - the PR is the trail, not a gate."
+              NR=$(gh pr list --base dev --head "$AUTO_BRANCH" --state open \
                      --json number,isCrossRepository,headRefOid \
-                     --jq ".[] | select(.isCrossRepository == false and .headRefOid == \"$ZIEL_SHA\") | .number" \
+                     --jq ".[] | select(.isCrossRepository == false and .headRefOid == \"$TARGET_SHA\") | .number" \
                    | head -1)
             fi
             if [ -z "$NR" ]; then
-              echo "::error::PR fuer $AUTO_ZWEIG liess sich weder finden noch anlegen."
+              echo "::error::Could neither find nor create a PR for $AUTO_BRANCH."
               exit 1
             fi
-            # Schlaegt der Merge fehl, ist das ein echter Fehler und der Lauf
-            # soll rot werden - dieser Abgleich darf nicht still ausfallen.
-            # DAS ZIEL BINDEN, NICHT NUR DEN KOPF. Befund `hoch` der Durchsicht,
-            # 25.08.2026: `--match-head-commit` prueft den Kopf des PRs. Ein
-            # Schreibberechtigter kann den ueber `--base dev` gefundenen PR
-            # zwischen Abfrage und Merge auf `main` umhaengen - der Kopf bleibt
-            # derselbe, der Merge geht durch, und dieser Ablauf meldete
-            # `status=merged`, obwohl `dev` unveraendert ist.
-            BASIS=$(gh pr view "$NR" --json baseRefName --jq .baseRefName)
-            if [ "$BASIS" != "dev" ]; then
-              echo "::error::PR #$NR zielt auf '$BASIS', nicht auf dev. Kein Merge."
+            # If the merge fails that is a real error and the run should go red -
+            # this sync must not fail silently.
+            # BIND THE TARGET, NOT JUST THE HEAD. Finding of severity `hoch` from
+            # the review, 2026-08-25: `--match-head-commit` checks the head of the
+            # PR. Someone with write access can re-target the PR found via
+            # `--base dev` to `main` between the query and the merge - the head
+            # stays the same, the merge goes through, and this workflow reported
+            # `status=merged` while `dev` is unchanged.
+            BASE=$(gh pr view "$NR" --json baseRefName --jq .baseRefName)
+            if [ "$BASE" != "dev" ]; then
+              echo "::error::PR #$NR targets '$BASE', not dev. No merge."
               exit 1
             fi
-            gh pr merge "$NR" --merge --delete-branch --match-head-commit "$ZIEL_SHA"
-            # UND DANACH DAS ERGEBNIS MESSEN. Jede Vorab-Pruefung ist nur eine
-            # Momentaufnahme; zwischen ihr und dem Merge bleibt eine Luecke. Das
-            # hier vertraut dem Aufruf nicht, sondern sieht nach - und faengt
-            # damit auch Faelle, die niemand vorher aufgezaehlt hat.
+            gh pr merge "$NR" --merge --delete-branch --match-head-commit "$TARGET_SHA"
+            # AND THEN MEASURE THE RESULT. Every up-front check is only a
+            # snapshot; a gap remains between it and the merge. This does not
+            # trust the call, it looks - and so it also catches cases nobody
+            # enumerated beforehand.
             git fetch origin dev
-            if ! git merge-base --is-ancestor "$ZIEL_SHA" origin/dev; then
-              echo "::error::Merge gemeldet, aber $ZIEL_SHA liegt nicht auf dev."
+            if ! git merge-base --is-ancestor "$TARGET_SHA" origin/dev; then
+              echo "::error::Merge reported, but $TARGET_SHA is not on dev."
               exit 1
             fi
             echo "status=merged" >> "$GITHUB_OUTPUT"
@@ -140,43 +140,43 @@ jobs:
             echo "status=conflict" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bei Konflikt einen PR oeffnen, statt still zu scheitern
+      - name: On conflict open a PR instead of failing silently
         if: steps.merge.outputs.status == 'conflict'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Ein bestehender offener PR reicht — sonst entsteht bei jedem
-          # main-Push ein weiterer und niemand sieht mehr, was offen ist.
-          # NIEMALS `main` selbst als Head. GitHubs "Resolve conflicts" und
-          # "Update branch" schreiben die Aufloesung auf den HEAD-Zweig und
-          # mergen dafuer die Base (`dev`) hinein. Mit `head=main` hiesse das:
-          # unfreigegebener `dev`-Stand landet auf `main` - genau der Weg, den
-          # die Kette dev -> test -> main ausschliesst. Und weil `main` per
-          # Ruleset geschuetzt ist, scheitert die Aufloesung stattdessen: der
-          # PR ist ueber die Oberflaeche gar nicht zu bearbeiten. Beides als
-          # Befund `hoch` gemeldet, 23.08.2026, in vier Repos gleichzeitig.
-          SYNC_ZWEIG=sync/main-to-dev
-          VORHANDEN=$(gh pr list --base dev --head "$SYNC_ZWEIG" --state open --json number --jq 'length')
-          if [ "$VORHANDEN" -gt 0 ]; then
-            echo "PR existiert bereits, kein zweiter"
+          # One existing open PR is enough — otherwise every push to main
+          # creates another and nobody can see what is open any more.
+          # NEVER `main` itself as the head. GitHub's "Resolve conflicts" and
+          # "Update branch" write the resolution onto the HEAD branch and merge
+          # the base (`dev`) into it for that. With `head=main` that would
+          # mean: unreleased `dev` state lands on `main` - exactly the path the
+          # chain dev -> test -> main rules out. And because `main` is
+          # protected by a ruleset, the resolution fails instead: the PR cannot
+          # be edited through the web UI at all. Both reported as findings of
+          # severity `hoch`, 2026-08-23, in four repos at once.
+          SYNC_BRANCH=sync/main-to-dev
+          EXISTING=$(gh pr list --base dev --head "$SYNC_BRANCH" --state open --json number --jq 'length')
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "a PR already exists, not opening a second one"
             exit 0
           fi
-          # Erst hier setzen: laege schon ein PR offen, wuerde ein Neusetzen
-          # den Zweig unter einer laufenden Aufloesung wegziehen.
-          git push -f origin "origin/main:refs/heads/$SYNC_ZWEIG"
-          # Body ueber eine Datei, nicht inline: ein mehrzeiliger --body-String
-          # sprengt den YAML-Block, und Backticks darin wuerden von der Shell
-          # als Kommando-Substitution ausgefuehrt.
-          cat > /tmp/pr-body.md <<'ENDE'
-          Der automatische Abgleich main -> dev ist an einem Konflikt gescheitert.
+          # Only set it here: if a PR were already open, resetting the branch
+          # would pull it out from under a resolution in progress.
+          git push -f origin "origin/main:refs/heads/$SYNC_BRANCH"
+          # Body through a file, not inline: a multi-line --body string breaks
+          # the YAML block, and backticks inside it would be executed by the
+          # shell as command substitution.
+          cat > /tmp/pr-body.md <<'END'
+          The automatic sync main -> dev failed on a conflict.
 
-          Solange dieser PR offen ist, baut jeder neue Zweig aus dev auf einem
-          Stand auf, der die Arbeit auf main nicht kennt — darunter die
-          taeglichen Bot-Commits und alles, was per Release direkt auf main ging.
+          As long as this PR is open, every new branch off dev builds on a state
+          that does not know the work on main — including the daily bot commits
+          and everything that went straight to main via a release.
 
-          Bitte von Hand aufloesen und mergen. Der Job laeuft danach wieder von
-          selbst.
-          ENDE
-          gh pr create --base dev --head "$SYNC_ZWEIG" \
-            --title "dev hinkt main hinterher — Merge braucht Handarbeit" \
+          Please resolve and merge by hand. The job runs by itself again
+          afterwards.
+          END
+          gh pr create --base dev --head "$SYNC_BRANCH" \
+            --title "dev is behind main — the merge needs a human" \
             --body-file /tmp/pr-body.md
