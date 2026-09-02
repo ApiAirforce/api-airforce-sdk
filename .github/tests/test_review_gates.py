@@ -1135,8 +1135,12 @@ class ReviewGateFixtures(unittest.TestCase):
         self.assertIn('base_repo == REPO', source)
         self.assertIn('user.get("type") == "Bot"', source)
         self.assertIn('user.get("login") in TRUSTED_BOTS', source)
-        self.assertNotIn('verification.get("verified")', source)
-        self.assertNotIn('GITHUB_COMMITTER_EMAIL', source)
+        # ...and every commit of that PR must be the bot's own, GitHub-signed
+        # commit: a contributor pushing onto a bot PR head voids the exemption.
+        self.assertIn('pulls/%s/commits', source)
+        self.assertIn('(c.get("author") or {}).get("login") == user.get("login")', source)
+        self.assertIn('== "noreply@github.com")', source)
+        self.assertIn('for c in commits', source)
         self.assertIn("if commit_is_trusted_bot(sha):", source)
         self.assertNotIn('author.endswith("[bot]")', source)
         self.assertNotIn('author in ("github-actions", "dependabot")', source)
