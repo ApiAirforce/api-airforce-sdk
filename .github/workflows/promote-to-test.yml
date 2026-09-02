@@ -635,9 +635,17 @@ jobs:
               without.extend(malformed)
 
               # The bot exemption must not hang on `%an`: the author name is
-              # untrusted commit metadata that anyone can set. GitHub's own
-              # attribution says whether an account of type Bot wrote it.
+              # untrusted commit metadata that anyone can set. The Commit API's
+              # top-level `author` is no better on its own - GitHub resolves it
+              # from the self-declared author e-mail, so a public bot noreply
+              # address attributes a forged commit to that bot (review finding
+              # on 744e3f8). What a contributor cannot forge is GitHub's own
+              # signature: commits GitHub creates for these bots (merges, the
+              # dependabot bumps) are committed by the web-flow identity and
+              # signed by GitHub. Require all three: allow-listed bot login,
+              # web-flow committer, and a verified signature.
               TRUSTED_BOTS = ("github-actions[bot]", "dependabot[bot]")
+              GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 
               def commit_is_trusted_bot(sha):
                   data = gh_json("repos/%s/commits/%s" % (REPO, sha), loud=True)
@@ -648,8 +656,13 @@ jobs:
                       ])
                       raise SystemExit(0)
                   author = data.get("author") or {}
+                  raw = data.get("commit") or {}
+                  committer = raw.get("committer") or {}
+                  verification = raw.get("verification") or {}
                   return (author.get("type") == "Bot"
-                          and author.get("login") in TRUSTED_BOTS)
+                          and author.get("login") in TRUSTED_BOTS
+                          and committer.get("email") == GITHUB_COMMITTER_EMAIL
+                          and verification.get("verified") is True)
 
               for sha, author, subject in entries:
                   if commit_is_trusted_bot(sha):

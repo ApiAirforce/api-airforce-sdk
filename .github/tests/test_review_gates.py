@@ -1126,7 +1126,13 @@ class ReviewGateFixtures(unittest.TestCase):
         self.assertIn('"-z",', source)
         self.assertIn("without.extend(malformed)", source)
         self.assertIn("def commit_is_trusted_bot(sha):", source)
+        # Author type alone is forgeable through the self-declared e-mail
+        # (finding on 744e3f8): the exemption also needs GitHub's web-flow
+        # committer and a verified signature, which a contributor cannot forge.
         self.assertIn('author.get("type") == "Bot"', source)
+        self.assertIn('committer.get("email") == GITHUB_COMMITTER_EMAIL', source)
+        self.assertIn('verification.get("verified") is True', source)
+        self.assertIn('GITHUB_COMMITTER_EMAIL = "noreply@github.com"', source)
         self.assertIn("if commit_is_trusted_bot(sha):", source)
         self.assertNotIn('author.endswith("[bot]")', source)
         self.assertNotIn('author in ("github-actions", "dependabot")', source)
