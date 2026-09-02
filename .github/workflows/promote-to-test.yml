@@ -634,35 +634,31 @@ jobs:
                   sha for sha, _ in malformed}
               without.extend(malformed)
 
-              # The bot exemption must not hang on `%an`: the author name is
-              # untrusted commit metadata that anyone can set. The Commit API's
-              # top-level `author` is no better on its own - GitHub resolves it
-              # from the self-declared author e-mail, so a public bot noreply
-              # address attributes a forged commit to that bot (review finding
-              # on 744e3f8). What a contributor cannot forge is GitHub's own
-              # signature: commits GitHub creates for these bots (merges, the
-              # dependabot bumps) are committed by the web-flow identity and
-              # signed by GitHub. Require all three: allow-listed bot login,
-              # web-flow committer, and a verified signature.
+              # The bot exemption must not hang on anything a contributor can
+              # carry into this repository. `%an` is free text; the Commit API's
+              # author is resolved from the self-declared e-mail; and even a
+              # verified GitHub web-flow signature is portable - a squash or
+              # rebase merge in a fork mints a bot-authored, GitHub-signed commit
+              # object that can be pushed here unchanged (review findings on the
+              # first port of backend#548). What cannot be carried in is a pull
+              # request OF THIS REPOSITORY: the exemption now requires a PR
+              # merged into REPO whose author is the allow-listed bot account and
+              # whose head history contains the commit. Nobody can open a PR here
+              # as dependabot[bot] or github-actions[bot] except GitHub itself.
               TRUSTED_BOTS = ("github-actions[bot]", "dependabot[bot]")
-              GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 
               def commit_is_trusted_bot(sha):
-                  data = gh_json("repos/%s/commits/%s" % (REPO, sha), loud=True)
-                  if data is None:
-                      report("Commit metadata could not be read.", [
-                          "GitHub did not return `repos/%s/commits/%s`." % (REPO, sha),
-                          "No commit is promoted while its author is unknown.",
-                      ])
-                      raise SystemExit(0)
-                  author = data.get("author") or {}
-                  raw = data.get("commit") or {}
-                  committer = raw.get("committer") or {}
-                  verification = raw.get("verification") or {}
-                  return (author.get("type") == "Bot"
-                          and author.get("login") in TRUSTED_BOTS
-                          and committer.get("email") == GITHUB_COMMITTER_EMAIL
-                          and verification.get("verified") is True)
+                  pulls = paginated_gh(
+                      "repos/%s/commits/%s/pulls?per_page=100" % (REPO, sha))
+                  for p in pulls:
+                      base_repo = ((p.get("base") or {}).get("repo") or {}).get("full_name")
+                      user = p.get("user") or {}
+                      if (p.get("merged_at")
+                              and base_repo == REPO
+                              and user.get("type") == "Bot"
+                              and user.get("login") in TRUSTED_BOTS):
+                          return True
+                  return False
 
               for sha, author, subject in entries:
                   if commit_is_trusted_bot(sha):
