@@ -1141,6 +1141,10 @@ class ReviewGateFixtures(unittest.TestCase):
         self.assertIn('(c.get("author") or {}).get("login") == user.get("login")', source)
         self.assertIn('== "noreply@github.com")', source)
         self.assertIn('for c in commits', source)
+        # ...the checked sha must be one of those commits (merge/squash commits
+        # are not in the list) and a truncated list is rejected.
+        self.assertIn('if sha not in {c.get("sha") for c in commits}:', source)
+        self.assertIn('len(commits) != (p.get("commits") or -1)', source)
         self.assertIn("if commit_is_trusted_bot(sha):", source)
         self.assertNotIn('author.endswith("[bot]")', source)
         self.assertNotIn('author in ("github-actions", "dependabot")', source)

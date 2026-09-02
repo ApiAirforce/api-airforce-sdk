@@ -668,7 +668,16 @@ jobs:
                           continue
                       commits = paginated_gh(
                       "repos/%s/pulls/%s/commits?per_page=100" % (REPO, nr))
-                      if not commits:
+                      # The PR commit list is capped at 250 entries by GitHub and
+                      # never contains the merge or squash commit created at
+                      # merge time. So: reject a list that does not match the
+                      # PR's own commit count, and exempt `sha` only when it IS
+                      # one of the validated commits - a platform merge commit
+                      # is handled by the merged-PR rule above, anything else
+                      # needs its review (round-3 review findings).
+                      if not commits or len(commits) != (p.get("commits") or -1):
+                          continue
+                      if sha not in {c.get("sha") for c in commits}:
                           continue
                       if all(
                           (c.get("author") or {}).get("type") == "Bot"
