@@ -101,11 +101,249 @@ jobs:
           print(f"context={CONTEXT} max_out={MAX_OUT} -> {MAX_DIFF} chars per batch",
                 file=sys.stderr)
 
+          # BEGIN REVIEW_BATCH_HELPERS
           _AT = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
           DATA_FILE = re.compile(
               r"(^|/)(locales/[^/]+\.json|package-lock\.json|[^/]*\.lock"
               r"|[^/]*\.generated\.[a-z]+|[^/]*snapshot[^/]*\.json)$")
+          UNKNOWN_PATH = "(unknown diff payload)"
+
+
+          class _UnsplittableDiff(RuntimeError):
+              """A diff part cannot be divided without silently losing content."""
+
+
+          def _git_c_unquote(token):
+              """Decode one complete Git C-quoted path token."""
+              if not token.startswith('"'):
+                  return token
+              if len(token) < 2 or not token.endswith('"'):
+                  return None
+              data, i, body = bytearray(), 0, token[1:-1]
+              escapes = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11,
+                         "f": 12, "r": 13, '"': 34, "\\": 92}
+              while i < len(body):
+                  char = body[i]
+                  if char != "\\":
+                      data.extend(char.encode("utf-8", "surrogateescape"))
+                      i += 1
+                      continue
+                  i += 1
+                  if i >= len(body):
+                      return None
+                  char = body[i]
+                  if char in escapes:
+                      data.append(escapes[char])
+                      i += 1
+                  elif char in "01234567":
+                      end = i + 1
+                      while end < min(i + 3, len(body)) and body[end] in "01234567":
+                          end += 1
+                      data.append(int(body[i:end], 8))
+                      i = end
+                  else:
+                      return None
+              return data.decode("utf-8", "surrogateescape")
+
+
+          def _git_path_value(raw):
+              """Read one Git metadata pathname without splitting ordinary spaces."""
+              token = raw.rstrip("\r\n")
+              # An unquoted tab can only introduce the optional timestamp field;
+              # literal tabs are C-quoted by Git.
+              if not token.startswith('"'):
+                  token = token.split("\t", 1)[0]
+              value = _git_c_unquote(token)
+              if not value:
+                  raise ValueError(f"invalid Git path token: {raw!r}")
+              return value
+
+
+          def diff_marker_path(line, prefix):
+              """Decode an authoritative ---/+++ marker and remove a/ or b/."""
+              if not (line.startswith("--- ") or line.startswith("+++ ")):
+                  raise ValueError(f"not a Git file marker: {line!r}")
+              value = _git_path_value(line[4:])
+              if value == "/dev/null":
+                  return None
+              if not value.startswith(prefix):
+                  raise ValueError(
+                      f"Git file marker does not start with {prefix!r}: {line!r}")
+              return value[len(prefix):]
+
+
+          def diff_target_path(body):
+              """Derive the target path only from metadata before the first hunk."""
+              source_seen, source = False, None
+              rename_target = copy_target = None
+              for line in body.splitlines(keepends=True):
+                  if line.startswith("@@"):
+                      break
+                  if line.startswith("--- "):
+                      source_seen = True
+                      source = diff_marker_path(line, "a/")
+                  elif line.startswith("+++ "):
+                      target = diff_marker_path(line, "b/")
+                      if target is not None:
+                          return target
+                      return source if source_seen and source is not None else UNKNOWN_PATH
+                  elif line.startswith("rename to "):
+                      rename_target = _git_path_value(line[len("rename to "):])
+                  elif line.startswith("copy to "):
+                      copy_target = _git_path_value(line[len("copy to "):])
+              return rename_target or copy_target or UNKNOWN_PATH
+
+
+          def diff_chunks(raw_diff):
+              """Group complete file diffs before deriving any pathname."""
+              if not raw_diff.strip():
+                  return []
+              bodies, current = [], []
+              for line in raw_diff.splitlines(keepends=True):
+                  if line.startswith("diff --git ") and current:
+                      bodies.append("".join(current))
+                      current = []
+                  current.append(line)
+              if current:
+                  bodies.append("".join(current))
+              return [(diff_target_path(body), body) for body in bodies]
+
+
+          def dropped_paths(parts):
+              """Keep an explicit label even when a batch path is unknown."""
+              return [path or UNKNOWN_PATH for path, _ in parts]
+
+
+          def changed_path_manifest(raw_diff):
+              """Return each derived target path once, in diff order."""
+              return list(dict.fromkeys(path for path, _ in diff_chunks(raw_diff)))
+
+
+          def batch_paths(parts):
+              """Return each path represented by one batch once."""
+              return list(dict.fromkeys(path or UNKNOWN_PATH for path, _ in parts))
+
+
+          def body_only_findings(findings):
+              """Copy global findings without pretending they have diff positions."""
+              result = []
+              for finding in findings:
+                  item = dict(finding)
+                  item.pop("line", None)
+                  result.append(item)
+              return result
+
+
+          def make_batch_report(batch_id, paths, summary, facts, findings):
+              """Keep the structured evidence required by the global pass."""
+              return {
+                  "batch_id": batch_id,
+                  "paths": list(paths),
+                  "summary": summary,
+                  "cross_batch_facts": list(facts),
+                  "findings": list(findings),
+              }
+
+
+          def reports_cover_manifest(changed_paths, reports):
+              """Require successful reports to cover exactly the changed manifest."""
+              reported = {
+                  path
+                  for report in reports
+                  for path in report.get("paths", [])
+              }
+              return bool(reports) and reported == set(changed_paths)
+
+
+          def reconciliation_text(changed_paths, reports):
+              """Build one indivisible final request from every structured report."""
+              envelope = {
+                  "changed_paths": list(changed_paths),
+                  "batch_reports": list(reports),
+              }
+              return (
+                  "Perform the mandatory global reconciliation. The JSON envelope "
+                  "contains the complete changed-path manifest and every successful "
+                  "batch report. Do not omit a report or path.\n\n"
+                  + json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+              )
+
+
+          def _exact_coverage(actual, expected):
+              """Accept each expected unique string exactly once, in any order."""
+              return (
+                  isinstance(actual, list)
+                  and all(isinstance(item, str) for item in actual)
+                  and len(actual) == len(expected)
+                  and set(actual) == set(expected)
+              )
+
+
+          def review_envelope_is_valid(verdict):
+              """Require every top-level review field instead of defaulting it."""
+              return (
+                  isinstance(verdict, dict)
+                  and bool(verdict)
+                  and verdict.get("verdict") in ("lgtm", "findings")
+                  and "summary" in verdict
+                  and isinstance(verdict["summary"], str)
+                  and "cross_batch_facts" in verdict
+                  and isinstance(verdict["cross_batch_facts"], list)
+                  and all(isinstance(fact, str) and fact.strip()
+                          for fact in verdict["cross_batch_facts"])
+                  and "findings" in verdict
+                  and isinstance(verdict["findings"], list)
+                  and (verdict.get("verdict") != "findings"
+                       or bool(verdict["findings"]))
+              )
+
+
+          def parse_reconciliation_response(text, expected_batches, expected_paths):
+              """Parse the final body-only review and prove exact input coverage."""
+              match = re.search(r"\{.*\}", text, re.S)
+              broken = False
+              try:
+                  verdict = json.loads(match.group(0)) if match else {}
+              except ValueError:
+                  verdict = {}
+
+              # Validate sibling fields independently. A malformed receipt or
+              # summary keeps reconciliation incomplete, but must not erase a
+              # security finding that can still be validated safely.
+              if not isinstance(verdict, dict) or not verdict:
+                  verdict, broken = {}, True
+              if verdict.get("verdict") not in ("lgtm", "findings"):
+                  broken = True
+
+              if "summary" not in verdict or not isinstance(
+                      verdict.get("summary"), str):
+                  summary, broken = text.strip()[:2000], True
+              else:
+                  summary = verdict["summary"] or text.strip()[:2000]
+
+              raw_facts = verdict.get("cross_batch_facts")
+              if (not isinstance(raw_facts, list)
+                      or not all(isinstance(fact, str) and fact.strip()
+                                 for fact in raw_facts)):
+                  broken = True
+
+              raw_findings = verdict.get("findings")
+              if not isinstance(raw_findings, list):
+                  raw_findings, broken = [], True
+              findings, invalid_findings = normalize_findings(
+                  raw_findings, require_line=False)
+              broken = broken or invalid_findings
+              if verdict.get("verdict") == "findings" and not raw_findings:
+                  broken = True
+
+              if (not _exact_coverage(
+                      verdict.get("covered_batches"), expected_batches)
+                      or not _exact_coverage(
+                          verdict.get("covered_paths"), expected_paths)):
+                  broken = True
+              return summary, findings, broken
+
 
           def _split_file(path, body, limit):
               """A single file bigger than one batch, cut at hunk boundaries.
@@ -122,7 +360,15 @@ jobs:
                       kopf, rest = zeilen[:i], zeilen[i:]
                       break
               else:
-                  return [(path, body[:limit])]  # no hunk (a pure rename): indivisible
+                  # A large diff without hunk boundaries cannot be split while
+                  # preserving usable line positions. The old body[:limit] fallback
+                  # silently discarded the suffix and still allowed a complete marker.
+                  # Fail before posting any marker instead.
+                  if len(body) > limit:
+                      raise _UnsplittableDiff(
+                          f"{path or '(unknown diff)'} is {len(body)} characters but "
+                          f"has no hunk boundary and cannot be split at {limit}")
+                  return [(path, body)]
               kopftext = "".join(kopf)
               budget = max(1, limit - len(kopftext))
 
@@ -230,7 +476,11 @@ jobs:
                   used += len(h)
               if cur:
                   teile.append((path, kopftext + "".join(cur)))
-              return teile or [(path, body[:limit])]
+              if not teile:
+                  raise _UnsplittableDiff(
+                      f"{path or '(unknown diff)'} could not be split without "
+                      "discarding content")
+              return teile
 
 
           def budget_batches(raw_diff, limit=MAX_DIFF):
@@ -249,19 +499,9 @@ jobs:
               The order stays: code first, data files last. If time does run out,
               what is missing is a translation file rather than Rust.
               """
-              chunks, cur, path = [], [], None
-              for line in raw_diff.splitlines(keepends=True):
-                  if line.startswith("diff --git "):
-                      if cur:
-                          chunks.append((path, "".join(cur)))
-                      cur = [line]
-                      path = line.rstrip("\n").split(" b/")[-1]
-                  else:
-                      cur.append(line)
-              if cur:
-                  chunks.append((path, "".join(cur)))
+              chunks = diff_chunks(raw_diff)
               if not chunks:
-                  return [[(None, raw_diff[:limit])]] if raw_diff.strip() else []
+                  return []
               chunks.sort(key=lambda c: 1 if DATA_FILE.search(c[0] or "") else 0)
               flach = []
               for p, body in chunks:
@@ -278,6 +518,27 @@ jobs:
               return stapel
 
 
+          def resplit_batch(parts, current_limit, floor=40_000):
+              """Shrink a refused batch from its actual payload, not its ceiling."""
+              raw_diff = "".join(body for _, body in parts)
+              actual_size = len(raw_diff)
+              if actual_size <= floor:
+                  return None, []
+              next_limit = max(
+                  floor, min(current_limit // 2, actual_size // 2)
+              )
+              if next_limit >= actual_size:
+                  return None, []
+              batches = budget_batches(raw_diff, next_limit)
+              child_sizes = [sum(len(body) for _, body in batch)
+                             for batch in batches]
+              if (len(batches) <= 1 or not child_sizes
+                      or max(child_sizes) >= actual_size):
+                  return None, []
+              return next_limit, batches
+          # END REVIEW_BATCH_HELPERS
+
+
           class _ZuGross(Exception):
               """The upstream refused the request for its SIZE, not its content.
           
@@ -290,20 +551,56 @@ jobs:
               """
           
           
-          def _ist_zu_gross(text):
+          # BEGIN REVIEW_SIZE_HELPERS
+          def _ist_zu_gross(text, error_type=""):
               """Does this error say the request was too large?
           
-              Matched on the words, because every gateway words it differently
-              and none of them carry a machine-readable code for it. Over-
-              matching costs a needless retry at half the size; under-matching
-              costs the whole review.
+              Input/context signals take precedence over output-option wording:
+              a relay may report that input and output together exceed the context
+              window. Rate-limit signals are never a reason to split the diff.
               """
               t = (text or "").lower()
-              return any(w in t for w in (
+              typ = (error_type or "").lower()
+              if typ in ("rate_limit", "rate_limit_error"):
+                  return False
+              if typ in ("context_length_exceeded", "context_length_error",
+                         "request_too_large"):
+                  return True
+              if any(w in t for w in (
+                  "rate limit", "rate_limit", "per minute", "tokens/min",
+                  "requests per minute")):
+                  return False
+              if any(w in t for w in (
                   "context length", "context_length", "context window",
-                  "maximum context", "too many tokens", "too large",
-                  "reduce the length", "input is too long", "prompt is too long",
-                  "exceeds", "request_too_large", "string_above_max_length"))
+                  "maximum context", "too many input tokens",
+                  "input is too long", "prompt is too long",
+                  "request too large", "request is too large",
+                  "request_too_large", "string_above_max_length")):
+                  return True
+              has_input_subject = any(w in t for w in (
+                  "context", "input", "prompt", "payload",
+                  "request body", "request size"))
+              has_size_signal = any(w in t for w in (
+                  "too large", "too long", "too many", "exceed",
+                  "maximum length", "max length", "size limit",
+                  "reduce the length"))
+              if has_input_subject and has_size_signal:
+                  return True
+              output_subject = any(w in t for w in (
+                  "max_completion_tokens", "max_tokens", "output token",
+                  "response"))
+              output_size_signal = any(w in t for w in (
+                  "too large", "too long", "too many", "exceed"))
+              if output_subject and output_size_signal:
+                  return False
+              return "too many tokens" in t
+
+
+          def _http_ist_zu_gross(status, body, reason=""):
+              """HTTP 413 is size; HTTP 429 is rate regardless of its wording."""
+              return status == 413 or (status != 429 and (
+                  _ist_zu_gross(body) or _ist_zu_gross(reason)))
+          # END REVIEW_SIZE_HELPERS
 
           if not KEY or not BASE:
               # Fork PRs get no secrets. That is correct and not an error - but it
@@ -321,13 +618,122 @@ jobs:
                   sys.exit(2)
               return r.stdout if raw else json.loads(r.stdout)
 
+          # BEGIN REVIEW_MARKER_HELPERS
+          REVIEW_BOT = "github-actions[bot]"
+          SUBMITTED_REVIEW_STATES = {"COMMENTED", "APPROVED", "CHANGES_REQUESTED"}
+
+
+          def complete_review_marker(sha):
+              return f"<!-- airforce-review {sha} -->"
+
+
+          def incomplete_review_marker(sha):
+              # Keep this substring-disjoint from the legacy complete marker:
+              # older gates used a broad `airforce-review` substring test.
+              return f"<!-- airforce-incomplete-review {sha} -->"
+
+
+          def has_exact_marker_line(body, marker):
+              return bool(re.search(
+                  rf"^{re.escape(marker)}\r?$", body or "", re.M))
+
+
+          def legacy_review_incomplete(body):
+              """Recognise incomplete reviews posted before they had their own marker."""
+              notices = (
+                  r"^_not reviewed - the wall-clock cap was reached:",
+                  r"^_nicht beurteilt, weil die zeitkappe erreicht war:",
+                  r"^> \*\*the model answer was not usable json\.\*\*",
+                  r"^> \*\*die modellantwort war kein verwertbares json\.\*\*",
+              )
+              return any(re.search(notice, body or "", re.I | re.M)
+                         for notice in notices)
+
+
+          def review_is_complete(body, sha):
+              text = body or ""
+              if legacy_review_incomplete(text):
+                  return False
+              if has_exact_marker_line(text, incomplete_review_marker(sha)):
+                  return False
+              return has_exact_marker_line(text, complete_review_marker(sha))
+
+
+          def is_complete_bot_review(review, sha):
+              user = review.get("user") or {}
+              return (user.get("type") == "Bot"
+                      and user.get("login") == REVIEW_BOT
+                      and str(review.get("state") or "").upper()
+                          in SUBMITTED_REVIEW_STATES
+                      and review_is_complete(review.get("body") or "", sha))
+
+
+          def flatten_paginated_lists(pages):
+              if not isinstance(pages, list):
+                  raise ValueError("paginated GitHub response is not a page list")
+              items = []
+              for page in pages:
+                  if not isinstance(page, list):
+                      raise ValueError("paginated GitHub response contains a non-list page")
+                  items.extend(page)
+              return items
+
+
+          def normalize_severity(value):
+              if (not isinstance(value, str)
+                      or value not in {"high", "medium", "low"}):
+                  raise ValueError(f"unsupported review severity: {value!r}")
+              return value
+
+
+          def normalize_findings(raw_findings, require_line=True):
+              """Validate local and global finding schemas without rewriting paths."""
+              findings, invalid = [], False
+              for finding in raw_findings:
+                  if not isinstance(finding, dict):
+                      invalid = True
+                      continue
+                  path = finding.get("path")
+                  note = finding.get("note")
+                  line = finding.get("line")
+                  if (not isinstance(path, str) or not path.strip()
+                          or not isinstance(note, str) or not note.strip()
+                          or (require_line and (
+                              type(line) is not int or line < 1))
+                          or (not require_line and line is not None and (
+                              type(line) is not int or line < 1))):
+                      invalid = True
+                      continue
+                  try:
+                      severity = normalize_severity(finding.get("severity"))
+                  except ValueError:
+                      severity = "high"
+                      invalid = True
+                  finding = dict(finding)
+                  finding["severity"] = severity
+                  findings.append(finding)
+              return findings, invalid
+
+
+          def severity_marker(findings):
+              levels = [normalize_severity(f.get("severity")) for f in findings]
+              high = sum(level == "high" for level in levels)
+              medium = sum(level == "medium" for level in levels)
+              return f"<!-- airforce-schwere hoch={high} mittel={medium} -->"
+
+          def gh_paginated_list(path):
+              return flatten_paginated_lists(
+                  gh(path, "--paginate", "--slurp"))
+          # END REVIEW_MARKER_HELPERS
+
           pr = gh(f"repos/{REPO}/pulls/{PR}")
           head = os.environ.get("HEAD_SHA") or pr["head"]["sha"]
-          marker = f"<!-- airforce-review {head} -->"
 
-          # Idempotence: one review per head commit, re-runs must not spam.
-          for rv in gh(f"repos/{REPO}/pulls/{PR}/reviews", "--paginate"):
-              if marker in (rv.get("body") or ""):
+          # Idempotence: only a complete review suppresses a re-run. An incomplete
+          # review must remain retryable, and only the workflow bot can satisfy it.
+          for rv in gh_paginated_list(
+                  f"repos/{REPO}/pulls/{PR}/reviews?per_page=100"):
+              if is_complete_bot_review(rv, head):
                   print(f"Review for {head[:7]} already posted - nothing to do.")
                   sys.exit(0)
 
@@ -341,6 +747,10 @@ jobs:
           if not stapel:
               print("Empty diff - nothing to review.")
               sys.exit(0)
+          manifest = changed_path_manifest(diff)
+          if not manifest:
+              print("The diff has no reviewable changed-path manifest.", file=sys.stderr)
+              sys.exit(1)
           print(f"diff split into {len(stapel)} batch(es)", file=sys.stderr)
 
           # Public repository -> English (community-facing); internal -> German.
@@ -357,17 +767,41 @@ jobs:
               "say so briefly. Never invent line numbers: only reference lines that "
               f"appear in the diff. Write all prose in {lang}. "
               'Answer with STRICT JSON only, no code fences: {"verdict":"lgtm"|"findings",'
-              '"summary":"...","findings":[{"path":"...","line":123,'
+              '"summary":"...","cross_batch_facts":["..."],'
+              '"findings":[{"path":"...","line":123,'
               '"severity":"high"|"medium"|"low","note":"..."}]} '
               '- "line" must be a line number in the NEW version of the file, taken from '
-              "the diff hunk headers. Omit findings you are not confident about."
+              "the diff hunk headers. Record every changed API, schema, locale, billing, "
+              "permission, or configuration contract that another batch may need to "
+              "verify in cross_batch_facts, even when it is not locally defective. "
+              "Omit findings you are not confident about."
+          )
+          reconciliation_system = (
+              "You are the mandatory final reconciliation pass for a batched code review. "
+              "The user message contains the complete changed-path manifest and every "
+              "structured batch report. Find only additional defects that become visible "
+              "across batches, especially mismatched APIs or schemas, missing locale "
+              "companions, billing inconsistencies, permission gaps, and configuration "
+              "contracts. Do not discard or rewrite local findings. "
+              f"Write the summary and finding notes in {lang}. "
+              'Answer with STRICT JSON only: {"verdict":"lgtm"|"findings",'
+              '"summary":"...","cross_batch_facts":[],'
+              '"findings":[{"path":"...",'
+              '"severity":"high"|"medium"|"low","note":"..."}],'
+              '"covered_batches":["batch-1"],"covered_paths":["path"]}. '
+              "This pass has no raw diff hunks, so its findings are review-body-only: "
+              "never include or guess line numbers. Copy every batch id and every changed "
+              "path from the input exactly once."
           )
           def stapel_text(nr, gesamt, teile):
               """The user message for one batch."""
               kopf = f"PR #{PR} - {pr.get('title','')!s}"
               if gesamt > 1:
-                  kopf += (f"\n\nThis is part {nr} of {gesamt} of the diff. Judge only"
-                           " what is below; the other parts are reviewed separately.")
+                  kopf += (f"\n\nThis is batch {nr} of {gesamt}. Review the raw diff "
+                           "below and record every relation another batch must verify. "
+                           "A mandatory final pass will reconcile all reports.")
+              kopf += ("\n\nComplete changed-path manifest:\n"
+                       + json.dumps(manifest, ensure_ascii=False))
               return kopf + "\n\n" + "".join(b for _, b in teile)
 
           class _RelayFehler(Exception):
@@ -688,8 +1122,9 @@ jobs:
                   return True
               print(f"keine Restzeit mehr fuer {was} - Schluss", file=sys.stderr)
               sys.exit(1)
-          def durchsicht(user_text):
-              """One pass over one batch. Returns (summary, findings, kaputt).
+          def durchsicht(user_text, system_text=system, expected_batches=None,
+                         expected_paths=None):
+              """Run one local batch or the final global reconciliation.
           
               The retry ladder above stays OUTSIDE on purpose. It carries
               `SCHLUSS`, the wall-clock deadline, and pulling that in here would
@@ -699,7 +1134,7 @@ jobs:
               version of this change before it was caught.
               """
               payload = {"model": MODEL,
-                         "messages": [{"role": "system", "content": system},
+                         "messages": [{"role": "system", "content": system_text},
                                       {"role": "user", "content": user_text}],
                          "max_completion_tokens": MAX_OUT,
                          "reasoning_effort": "max"}
@@ -722,6 +1157,11 @@ jobs:
                       # (reasoning_effort max -> high -> ohne). Meldet das
                       # Relay denselben Fall als 200er-Rumpf, gehoert ihm
                       # dieselbe Reparatur - erst danach ist er dauerhaft.
+                      # A size refusal must be classified before that compatibility
+                      # ladder. Otherwise context_length_exceeded is resent unchanged
+                      # with two reasoning settings before the diff is split.
+                      if _ist_zu_gross(str(e), getattr(e, "typ", "")):
+                          raise _ZuGross(str(e))
                       if getattr(e, "typ", "") == "invalid_request_error":
                           _stufe = payload.get("reasoning_effort")
                           if _stufe == "max":
@@ -737,13 +1177,6 @@ jobs:
                                     "weiter ohne reasoning_effort",
                                     file=sys.stderr)
                               continue
-                      # A SIZE REFUSAL IS NOT A PERMANENT FAILURE, IT IS A HINT.
-                      #
-                      # Passed upward so the batch is cut finer and sent again, instead of
-                      # ending the whole run. Without this the class below is dead code: the
-                      # shrink loop exists, and nothing ever reaches it.
-                      if _ist_zu_gross(str(e)):
-                          raise _ZuGross(str(e))
                       # No words, but it ran long: treat it as a size hint rather than
                       # retrying the same oversized batch until the deadline eats the run.
                       _gelaufen = time.monotonic() - _versuch_ab
@@ -779,7 +1212,8 @@ jobs:
                           _leib = e.read().decode("utf-8", "replace")[:2000]
                       except Exception:
                           pass
-                      if _ist_zu_gross(_leib) or _ist_zu_gross(getattr(e, "reason", "")):
+                      if _http_ist_zu_gross(
+                              e.code, _leib, getattr(e, "reason", "")):
                           raise _ZuGross(_leib or str(e))
                       # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
                       # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
@@ -804,7 +1238,7 @@ jobs:
                           time.sleep(p)
                           continue
                       # A reviewer that could not run must fail loudly, not pass as clean.
-                      print(f"Model call failed: HTTP {e.code}: {e.read()[:300]!r}", file=sys.stderr)
+                      print(f"Model call failed: HTTP {e.code}: {_leib[:300]!r}", file=sys.stderr)
                       sys.exit(1)
                   # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
                   # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
@@ -835,6 +1269,13 @@ jobs:
               usage = out.get("usage", {})
               print(f"model={out.get('model')} tokens: {usage}")
 
+              if expected_batches is not None or expected_paths is not None:
+                  if expected_batches is None or expected_paths is None:
+                      return text.strip()[:2000], [], [], True
+                  summary, findings, broken = parse_reconciliation_response(
+                      text, expected_batches, expected_paths)
+                  return summary, findings, [], broken
+
               m = re.search(r"\{.*\}", text, re.S)
               # AN UNREADABLE ANSWER IS NOT A CLEAN REVIEW.
               #
@@ -847,23 +1288,26 @@ jobs:
                   verdict = json.loads(m.group(0)) if m else {}
               except ValueError:
                   verdict = {}
-              if (not isinstance(verdict, dict) or not verdict
-                      or verdict.get("verdict") not in ("lgtm", "findings")
-                      or not isinstance(verdict.get("findings", []), list)
-                      or not isinstance(verdict.get("summary", ""), str)
-                      # Claiming "findings" and delivering none means truncated.
-                      or (verdict.get("verdict") == "findings"
-                          and not verdict.get("findings"))):
+              if not review_envelope_is_valid(verdict):
                   verdict, parse_kaputt = {}, True
               summary = verdict.get("summary") or text.strip()[:2000]
               # A finding silently dropped is not a clean review either: a non-empty
-              # list of nulls or objects without `path` passes the type check and the
-              # comprehension then discards them without a word.
+              # list with malformed objects can pass the outer type check. Invalid
+              # paths or severity labels must make the whole review incomplete rather
+              # than disappearing or being encoded as zero high findings.
               _roh = verdict.get("findings") or []
-              findings = [f for f in _roh if isinstance(f, dict) and f.get("path")]
-              if len(findings) != len(_roh):
+              findings, invalid_findings = normalize_findings(_roh)
+              parse_kaputt = parse_kaputt or invalid_findings
+              if "cross_batch_facts" not in verdict:
                   parse_kaputt = True
-              return summary, findings, parse_kaputt
+              raw_facts = verdict.get("cross_batch_facts", [])
+              if not isinstance(raw_facts, list):
+                  raw_facts, parse_kaputt = [], True
+              facts = [fact for fact in raw_facts
+                       if isinstance(fact, str) and fact.strip()]
+              if len(facts) != len(raw_facts):
+                  facts, parse_kaputt = [], True
+              return summary, findings, facts, parse_kaputt
 
           # EVERY BATCH GETS ITS OWN PASS, AND EACH CARRIES ITS OWN LIMIT.
           #
@@ -881,6 +1325,7 @@ jobs:
           offen = [(MAX_DIFF, t) for t in budget_batches(diff, MAX_DIFF)]
           gesamt = len(offen)
           teil_zusammenfassungen, findings, dropped = [], [], []
+          batch_reports = []
           parse_kaputt = False
           nr = 0
           erster_aufruf = True
@@ -888,20 +1333,24 @@ jobs:
               b_grenze, teile = offen.pop(0)
               nr += 1
               if not erster_aufruf and not zeit_fuer_neuen_versuch(0):
-                  dropped += [p for p, _ in teile if p]
+                  dropped += dropped_paths(teile)
                   continue
               erster_aufruf = False
               try:
-                  s, f, k = durchsicht(stapel_text(nr, gesamt, teile))
+                  s, f, facts, k = durchsicht(stapel_text(nr, gesamt, teile))
               except _ZuGross as e:
-                  if b_grenze <= 40_000:
-                      print("upstream refuses even the smallest batch", file=sys.stderr)
-                      sys.exit(1)
-                  feiner_grenze = max(40_000, b_grenze // 2)
-                  print(f"upstream refused a {b_grenze} char batch ({e!s:.120}) - "
-                        f"resplitting it at {feiner_grenze}, {nr - 1} batch(es) done",
+                  feiner_grenze, feiner = resplit_batch(teile, b_grenze)
+                  if feiner_grenze is None:
+                      print("upstream refuses an indivisible batch; no strictly "
+                            "smaller retry is possible - marking it incomplete",
+                            file=sys.stderr)
+                      dropped += dropped_paths(teile)
+                      continue
+                  payload_size = sum(len(body) for _, body in teile)
+                  print(f"upstream refused a {payload_size} char payload at the "
+                        f"{b_grenze} char limit ({e!s:.120}) - resplitting it at "
+                        f"{feiner_grenze}, {nr - 1} batch(es) done",
                         file=sys.stderr)
-                  feiner = budget_batches("".join(b for _, b in teile), feiner_grenze)
                   offen[0:0] = [(feiner_grenze, t) for t in feiner]
                   gesamt = nr - 1 + len(offen)
                   nr -= 1
@@ -910,6 +1359,54 @@ jobs:
               if s:
                   teil_zusammenfassungen.append(s if gesamt == 1 else f"({nr}/{gesamt}) {s}")
               findings += f
+              batch_id = f"batch-{len(batch_reports) + 1}"
+              batch_reports.append(make_batch_report(
+                  batch_id, batch_paths(teile), s, facts, f))
+
+          # Local calls cannot prove relationships that cross a batch boundary. The
+          # final request is deliberately indivisible; any size, deadline, transport,
+          # parse, or coverage failure keeps the review incomplete.
+          reconciliation_failed = not reports_cover_manifest(manifest, batch_reports)
+          if reconciliation_failed:
+              print("Batch reports do not cover the complete changed-path manifest.",
+                    file=sys.stderr)
+          if (len(batch_reports) > 1 and not parse_kaputt and not dropped
+                  and not reconciliation_failed):
+              expected_batch_ids = [report["batch_id"] for report in batch_reports]
+              reconciliation_prompt = reconciliation_text(manifest, batch_reports)
+              if len(reconciliation_prompt) > MAX_DIFF:
+                  print("Global reconciliation input exceeds the safe request budget.",
+                        file=sys.stderr)
+                  reconciliation_failed = True
+              elif not zeit_fuer_neuen_versuch(0):
+                  print("No deadline budget remains for global reconciliation.",
+                        file=sys.stderr)
+                  reconciliation_failed = True
+              else:
+                  try:
+                      global_summary, global_findings, _, broken = durchsicht(
+                          reconciliation_prompt,
+                          system_text=reconciliation_system,
+                          expected_batches=expected_batch_ids,
+                          expected_paths=manifest)
+                  except _ZuGross as error:
+                      print(f"Global reconciliation was refused for size: {error!s:.160}",
+                            file=sys.stderr)
+                      reconciliation_failed = True
+                  except SystemExit as error:
+                      print(f"Global reconciliation call failed with exit {error.code}.",
+                            file=sys.stderr)
+                      reconciliation_failed = True
+                  else:
+                      reconciliation_failed = broken
+                      if not broken:
+                          if global_summary:
+                              teil_zusammenfassungen.append(
+                                  f"(global) {global_summary}")
+                      # Individually validated global findings stay visible even
+                      # when another response field or coverage receipt is invalid.
+                      # The broken reconciliation still prevents a complete marker.
+                      findings += body_only_findings(global_findings)
           summary = " ".join(teil_zusammenfassungen).strip() or "(no summary)"
 
           sev_de = {"high": "hoch", "medium": "mittel", "low": "niedrig"}
@@ -946,7 +1443,14 @@ jobs:
                   if not english else
                   "> **The model answer was not usable JSON.** Structured findings may "
                   "be missing. The run fails for that reason.")
-          lines += ["", f"_{MODEL} · api.airforce_", marker]
+          if reconciliation_failed:
+              lines.append(
+                  "> **The mandatory global reconciliation did not complete with exact "
+                  "batch and path coverage.** This review is incomplete and the run fails.")
+          incomplete = parse_kaputt or bool(dropped) or reconciliation_failed
+          marker = (incomplete_review_marker(head) if incomplete
+                    else complete_review_marker(head))
+          lines += ["", f"_{MODEL} · api.airforce_", severity_marker(findings), marker]
           body = "\n".join(lines)
 
           comments = [{"path": f["path"], "line": int(f["line"]), "side": "RIGHT",
@@ -986,7 +1490,7 @@ jobs:
           # were never sent. A run that found nothing and a run that did not look
           # were indistinguishable from outside - which is the shape the batching
           # rework exists to remove.
-          if parse_kaputt or dropped:
+          if parse_kaputt or dropped or reconciliation_failed:
               if dropped:
                   print(f"{len(dropped)} file(s) never reviewed - the wall-clock cap "
                         "was reached. Failing so an incomplete review does not read "
@@ -994,5 +1498,8 @@ jobs:
               if parse_kaputt:
                   print("Model answer was not parsable JSON - the review is posted "
                         "but incomplete.", file=sys.stderr)
+              if reconciliation_failed:
+                  print("Global reconciliation did not complete with exact coverage - "
+                        "the review is posted but incomplete.", file=sys.stderr)
               sys.exit(1)
           PYEOF
