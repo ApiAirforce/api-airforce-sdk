@@ -1116,6 +1116,25 @@ class ReviewGateFixtures(unittest.TestCase):
             with self.subTest(workflow=workflow.name):
                 compile(inline_python(workflow), str(workflow), "exec")
 
+    def test_gate_window_listing_fails_closed_on_untrusted_git_metadata(self):
+        # Review findings on sdk#64 (backend#548): the author name and the
+        # subject are contributor-controlled, so neither may decide whether a
+        # commit is checked. Records are NUL-delimited, a record that still
+        # does not parse counts as unreviewed, and the bot exemption comes
+        # from GitHub's account type, not from `%an`.
+        source = inline_python(GATE_WORKFLOW)
+        self.assertIn('"-z",', source)
+        self.assertIn("without.extend(malformed)", source)
+        self.assertIn("def commit_is_trusted_bot(sha):", source)
+        self.assertIn('author.get("type") == "Bot"', source)
+        self.assertIn("if commit_is_trusted_bot(sha):", source)
+        self.assertNotIn('author.endswith("[bot]")', source)
+        self.assertNotIn('author in ("github-actions", "dependabot")', source)
+        # A malformed record without a SHA holds the whole gate.
+        self.assertIn("The commit list could not be read.", source)
+        self.assertLess(source.index("without.extend(malformed)"),
+                        source.index("for sha, author, subject in entries:"))
+
 
 if __name__ == "__main__":
     unittest.main()

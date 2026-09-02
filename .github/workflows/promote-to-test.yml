@@ -605,17 +605,54 @@ jobs:
               print("The automated review gate is disabled for this repository.")
               raw = ""
           else:
-              raw = git("log", "%s..%s" % (basis, dev),
+              # NUL-delimited records: `%an` and `%s` are contributor-controlled
+              # and may contain the field separator, but never a NUL. A record
+              # that still does not parse is NOT skipped - its commit counts as
+              # unreviewed. Silently dropping it let a crafted subject remove a
+              # commit from the gate (review finding on sdk#64, backend#548).
+              raw = git("log", "%s..%s" % (basis, dev), "-z",
                         "--format=%H" + SEP + "%an" + SEP + "%s") or ""
               entries = []
-              for line in raw.splitlines():
-                  parts = line.split(SEP)
-                  if len(parts) != 3:
+              malformed = []
+              for record in raw.split("\0"):
+                  if not record:
                       continue
-                  entries.append(parts)
-              candidate_shas = {parts[0] for parts in entries}
+                  parts = record.split(SEP)
+                  if len(parts) == 3 and re.fullmatch(r"[0-9a-f]{40}", parts[0]):
+                      entries.append(parts)
+                      continue
+                  sha_match = re.match(r"[0-9a-f]{40}", record)
+                  if not sha_match:
+                      report("The commit list could not be read.", [
+                          "A `git log` record had no leading SHA: `%s`."
+                          % record[:80].replace("`", "'"),
+                          "No commit is promoted while the window is unreadable.",
+                      ])
+                      raise SystemExit(0)
+                  malformed.append((sha_match.group(0), "(unparseable log record)"))
+              candidate_shas = {parts[0] for parts in entries} | {
+                  sha for sha, _ in malformed}
+              without.extend(malformed)
+
+              # The bot exemption must not hang on `%an`: the author name is
+              # untrusted commit metadata that anyone can set. GitHub's own
+              # attribution says whether an account of type Bot wrote it.
+              TRUSTED_BOTS = ("github-actions[bot]", "dependabot[bot]")
+
+              def commit_is_trusted_bot(sha):
+                  data = gh_json("repos/%s/commits/%s" % (REPO, sha), loud=True)
+                  if data is None:
+                      report("Commit metadata could not be read.", [
+                          "GitHub did not return `repos/%s/commits/%s`." % (REPO, sha),
+                          "No commit is promoted while its author is unknown.",
+                      ])
+                      raise SystemExit(0)
+                  author = data.get("author") or {}
+                  return (author.get("type") == "Bot"
+                          and author.get("login") in TRUSTED_BOTS)
+
               for sha, author, subject in entries:
-                  if author.endswith("[bot]") or author in ("github-actions", "dependabot"):
+                  if commit_is_trusted_bot(sha):
                       continue
                   parents = (git("rev-list", "--parents", "-1", sha) or "").split()[1:]
                   if len(parents) > 1:
