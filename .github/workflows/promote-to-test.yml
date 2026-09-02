@@ -40,12 +40,10 @@
 # `workflow_run` takes over and hits the timing exactly.
 # ============================================================================
 
-# NOTE ON THIS PUBLIC REPO: this file is character-identical to the one in
-# the other repos except for two lines - one template, many instances, so
-# there is only ONE implementation. The two differences are necessary:
-# `ubuntu-latest` instead of a self-hosted runner (a self-hosted runner on a
-# public repo is attackable through a fork PR), and DURCHSICHT_NOETIG is set
-# to `nein`, because there is no review-push.yml here.
+# NOTE ON THIS PUBLIC REPO: use `ubuntu-latest`, never a self-hosted runner that
+# a fork pull request could reach. There is no push reviewer here, but `dev` is
+# PR-only: branch commits carry reviews from review.yml and merge commits are
+# skipped below. The review gate must therefore stay enabled.
 
 name: promote to test
 
@@ -114,11 +112,9 @@ env:
     Dart
     Rust
   TITEL: 'dev kommt nicht nach test'
-  # `nein` ONLY for repos without review-push.yml. There, a direct push
-  # carries no review the gate could find - it would report every commit as
-  # "without review" and never open. The gate then demands the checks, and
-  # only those. Whoever wires up the reviewer there switches this to `ja`.
-  DURCHSICHT_NOETIG: 'nein'
+  # `dev` accepts reviewed PRs only. Their branch commits are present after a
+  # merge and carry the exact-SHA reviews that the gate verifies below.
+  DURCHSICHT_NOETIG: 'ja'
 
 jobs:
   tor:
@@ -428,23 +424,253 @@ jobs:
 
           # ---- Point 2+3: review and open findings ---------------------------
           without, high = [], []
+          high_keys = set()
           DURCHSICHT = (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() == "ja"
+
+          # BEGIN GATE_REVIEW_HELPERS
+          REVIEW_BOT = "github-actions[bot]"
+          SUBMITTED_REVIEW_STATES = {"COMMENTED", "APPROVED", "CHANGES_REQUESTED"}
+
+
+          def complete_review_markers(sha):
+              return (
+                  f"<!-- airforce-review {sha} -->",
+                  f"<!-- airforce-review-push {sha} -->",
+              )
+
+
+          def incomplete_review_markers(sha):
+              return (
+                  f"<!-- airforce-incomplete-review {sha} -->",
+                  f"<!-- airforce-incomplete-review-push {sha} -->",
+                  f"<!-- airforce-review-push-unvollstaendig {sha} -->",
+              )
+
+
+          def has_exact_marker_line(body, marker):
+              return bool(re.search(
+                  rf"^{re.escape(marker)}\r?$", body or "", re.M))
+
+
+          def legacy_review_incomplete(body):
+              """Recognise incomplete reviews that still carried a complete marker."""
+              notices = (
+                  r"^_not reviewed - the wall-clock cap was reached:",
+                  r"^_nicht beurteilt, weil die zeitkappe erreicht war:",
+                  r"^_nicht beurteilt, weil ueber dem 160k-budget:",
+                  r"^_die vorher-marke dieses pushes war nicht abrufbar ",
+                  r"^> \*\*the model answer was not usable json\.\*\*",
+                  r"^> \*\*die modellantwort war kein verwertbares json\.\*\*",
+                  r"^> \*\*die durchsicht ist unvollstaendig\.\*\*",
+              )
+              return any(re.search(notice, body or "", re.I | re.M)
+                         for notice in notices)
+
+
+          def review_is_complete(body, sha):
+              text = body or ""
+              if legacy_review_incomplete(text):
+                  return False
+              if any(has_exact_marker_line(text, marker)
+                     for marker in incomplete_review_markers(sha)):
+                  return False
+              return any(has_exact_marker_line(text, marker)
+                         for marker in complete_review_markers(sha))
+
+
+          def is_complete_bot_entry(entry, sha):
+              user = entry.get("user") or {}
+              return (user.get("type") == "Bot"
+                      and user.get("login") == REVIEW_BOT
+                      and review_is_complete(entry.get("body") or "", sha))
+
+
+          def is_complete_bot_comment(comment, sha):
+              return is_complete_bot_entry(comment, sha)
+
+
+          def is_complete_bot_review(review, sha):
+              return (str(review.get("state") or "").upper()
+                      in SUBMITTED_REVIEW_STATES
+                      and is_complete_bot_entry(review, sha))
+
+
+          def normal_merge_review_head(pull, sha, candidate_shas):
+              """Return the reviewed PR head only for a proven normal merge.
+
+              A review at that head covers the complete PR diff, but it must not
+              become generic evidence for every commit merely associated with a
+              pull request. The merge graph proves both the exact reviewed state
+              and that the commit was introduced by this PR into `dev`.
+              """
+              if (not pull.get("merged_at")
+                      or (pull.get("base") or {}).get("ref") != "dev"):
+                  return None
+              merge_sha = pull.get("merge_commit_sha") or ""
+              if not merge_sha or merge_sha not in candidate_shas:
+                  return None
+              merge_line = (git(
+                  "rev-list", "--parents", "-1", merge_sha) or "").split()
+              # Exactly two parents: first is the prior dev state, second is the
+              # final PR head. Squash, rebase and octopus merges remain unsupported.
+              if len(merge_line) != 3 or merge_line[0] != merge_sha:
+                  return None
+              first_parent, review_head = merge_line[1:]
+              if (pull.get("head") or {}).get("sha") != review_head:
+                  return None
+              introduced = set((git(
+                  "rev-list", "%s..%s" % (first_parent, review_head))
+                  or "").splitlines())
+              return review_head if sha in introduced else None
+
+
+          def prefer_exact_review_evidence(exact, fallback):
+              """A later PR-head review must never hide exact commit findings."""
+              return list(exact) if exact else list(fallback)
+
+
+          def latest_finding_evidence(exact, fallback):
+              """Keep the latest exact and fallback verdicts independently."""
+              return [max(group, key=lambda item: item.get("created_at") or "")
+                      for group in (exact, fallback) if group]
+
+
+          def response_comment_heads(evidence, sha):
+              """Commit heads whose fallback reviews may carry response comments."""
+              return list(dict.fromkeys(
+                  item.get("review_head")
+                  for item in evidence
+                  if item.get("review_head") and item.get("review_head") != sha
+              ))
+
+
+          def review_response_sha(evidence, sha):
+              """Name the exact commit where a finding response belongs."""
+              return evidence.get("review_head") or sha
+
+
+          def response_comments_for_evidence(
+                  evidence, sha, commit_comments, pr_comments, head_comments):
+              """Keep exact-commit and fallback-head responses disjoint."""
+              comments = list(pr_comments)
+              review_head = evidence.get("review_head")
+              if review_head and review_head != sha:
+                  comments += list(head_comments.get(review_head, []))
+              else:
+                  comments += list(commit_comments)
+              return comments
+
+
+          def flatten_paginated_lists(pages):
+              if not isinstance(pages, list):
+                  raise ValueError("paginated GitHub response is not a page list")
+              items = []
+              for page in pages:
+                  if not isinstance(page, list):
+                      raise ValueError("paginated GitHub response contains a non-list page")
+                  items.extend(page)
+              return items
+
+
+          def paginated_gh(path):
+              pages = gh_json(path, "--paginate", "--slurp", loud=True)
+              if pages is None:
+                  raise RuntimeError(
+                      f"promotion cannot read every GitHub page for {path}")
+              return flatten_paginated_lists(pages)
+
+
+          def required_gh_json(path):
+              value = gh_json(path, loud=True)
+              if value is None:
+                  raise RuntimeError(
+                      f"promotion cannot read required GitHub source {path}")
+              return value
+
+
+          def high_finding_count(body):
+              text = body or ""
+              visible = len(re.findall(
+                  r"\|\s*(?:high|hoch)\s*\|", text, re.I))
+              machine = re.findall(
+                  r"^<!-- airforce-schwere hoch=(\d+) mittel=(\d+) -->$",
+                  text, re.M)
+              if machine:
+                  return max(int(machine[-1][0]), visible)
+              # Legacy review tables may spell severity as either `high` or `hoch`.
+              return visible
+          # END GATE_REVIEW_HELPERS
+
           if not DURCHSICHT:
-              print("The review is not required in this repo (no review-push.yml).")
+              print("The automated review gate is disabled for this repository.")
               raw = ""
           else:
-              raw = git("log", "%s..%s" % (basis, dev),
+              # NUL-delimited records: `%an` and `%s` are contributor-controlled
+              # and may contain the field separator, but never a NUL. A record
+              # that still does not parse is NOT skipped - its commit counts as
+              # unreviewed. Silently dropping it let a crafted subject remove a
+              # commit from the gate (review finding on sdk#64, backend#548).
+              raw = git("log", "%s..%s" % (basis, dev), "-z",
                         "--format=%H" + SEP + "%an" + SEP + "%s") or ""
-              for line in raw.splitlines():
-                  parts = line.split(SEP)
-                  if len(parts) != 3:
+              entries = []
+              malformed = []
+              for record in raw.split("\0"):
+                  if not record:
                       continue
-                  sha, author, subject = parts
-                  if author.endswith("[bot]") or author in ("github-actions", "dependabot"):
+                  parts = record.split(SEP)
+                  if len(parts) == 3 and re.fullmatch(r"[0-9a-f]{40}", parts[0]):
+                      entries.append(parts)
+                      continue
+                  sha_match = re.match(r"[0-9a-f]{40}", record)
+                  if not sha_match:
+                      report("The commit list could not be read.", [
+                          "A `git log` record had no leading SHA: `%s`."
+                          % record[:80].replace("`", "'"),
+                          "No commit is promoted while the window is unreadable.",
+                      ])
+                      raise SystemExit(0)
+                  malformed.append((sha_match.group(0), "(unparseable log record)"))
+              candidate_shas = {parts[0] for parts in entries} | {
+                  sha for sha, _ in malformed}
+              without.extend(malformed)
+
+              # The bot exemption must not hang on `%an`: the author name is
+              # untrusted commit metadata that anyone can set. The Commit API's
+              # top-level `author` is no better on its own - GitHub resolves it
+              # from the self-declared author e-mail, so a public bot noreply
+              # address attributes a forged commit to that bot (review finding
+              # on 744e3f8). What a contributor cannot forge is GitHub's own
+              # signature: commits GitHub creates for these bots (merges, the
+              # dependabot bumps) are committed by the web-flow identity and
+              # signed by GitHub. Require all three: allow-listed bot login,
+              # web-flow committer, and a verified signature.
+              TRUSTED_BOTS = ("github-actions[bot]", "dependabot[bot]")
+              GITHUB_COMMITTER_EMAIL = "noreply@github.com"
+
+              def commit_is_trusted_bot(sha):
+                  data = gh_json("repos/%s/commits/%s" % (REPO, sha), loud=True)
+                  if data is None:
+                      report("Commit metadata could not be read.", [
+                          "GitHub did not return `repos/%s/commits/%s`." % (REPO, sha),
+                          "No commit is promoted while its author is unknown.",
+                      ])
+                      raise SystemExit(0)
+                  author = data.get("author") or {}
+                  raw = data.get("commit") or {}
+                  committer = raw.get("committer") or {}
+                  verification = raw.get("verification") or {}
+                  return (author.get("type") == "Bot"
+                          and author.get("login") in TRUSTED_BOTS
+                          and committer.get("email") == GITHUB_COMMITTER_EMAIL
+                          and verification.get("verified") is True)
+
+              for sha, author, subject in entries:
+                  if commit_is_trusted_bot(sha):
                       continue
                   parents = (git("rev-list", "--parents", "-1", sha) or "").split()[1:]
                   if len(parents) > 1:
-                      pulls = gh_json("repos/%s/commits/%s/pulls" % (REPO, sha)) or []
+                      pulls = paginated_gh(
+                          "repos/%s/commits/%s/pulls?per_page=100" % (REPO, sha))
                       if any(p.get("merged_at") and p.get("merge_commit_sha") == sha
                              for p in pulls):
                           continue
@@ -471,30 +697,28 @@ jobs:
                   # have opened with hoch=0.
                   # Measured who really writes it: github-actions[bot],
                   # type == "Bot". A human cannot set `type` to Bot.
-                  # NOT affected: `#erledigt` / `#fehlalarm`. Those run over a
-                  # separate regex on `comm` and are supposed to come from humans.
-                  BOT = "github-actions[bot]"
-
-                  def _review(k):
-                      u = k.get("user") or {}
-                      if u.get("type") != "Bot" or u.get("login") != BOT:
-                          return False
-                      t = k.get("body") or ""
-                      return ("airforce-review-push" in t
-                              or "Automatische Durchsicht" in t
-                              or "Automated review" in t)
-
-                  comm = gh_json("repos/%s/commits/%s/comments?per_page=100" % (REPO, sha)) or []
-                  found = [c for c in comm if _review(c)]
+                  # NOT affected: `#erledigt` / `#fehlalarm`. Those use a
+                  # separate regex over response comments and must come from humans.
+                  commit_comments = paginated_gh(
+                      "repos/%s/commits/%s/comments?per_page=100" % (REPO, sha))
+                  exact_found = [c for c in commit_comments
+                                 if is_complete_bot_comment(c, sha)]
+                  fallback_found = []
+                  pr_comments = []
                   # PR reviews carry `submitted_at` instead of `created_at` -
                   # without aligning them, `max(...)` below picks the wrong one
                   # as newest and reads the findings of an outdated version.
-                  for p in (gh_json("repos/%s/commits/%s/pulls" % (REPO, sha)) or []):
+                  for p in paginated_gh(
+                          "repos/%s/commits/%s/pulls?per_page=100" % (REPO, sha)):
                       nr = p.get("number")
                       if not nr:
                           continue
-                      for r in (gh_json("repos/%s/pulls/%s/reviews?per_page=100"
-                                        % (REPO, nr)) or []):
+                      reviews = paginated_gh(
+                              "repos/%s/pulls/%s/reviews?per_page=100"
+                              % (REPO, nr))
+                      review_head = normal_merge_review_head(
+                          p, sha, candidate_shas)
+                      for r in reviews:
                           # ONLY A REVIEW AT EXACTLY THIS COMMIT.
                           # Finding `hoch` from the review, 2026-08-25, and it
                           # hits: a PR carries several commits, and each of its
@@ -503,26 +727,58 @@ jobs:
                           # slipped through unchecked - exactly the hole this
                           # gate is meant to close. `commit_id` says which state
                           # the review saw.
-                          if _review(r) and r.get("commit_id") == sha:
-                              found.append({"body": r.get("body") or "",
-                                            "created_at": r.get("submitted_at") or "",
-                                            "html_url": r.get("html_url") or ""})
-                      # Answers (`#erledigt` / `#fehlalarm`) stand at the PR,
-                      # not at the commit - otherwise an answered finding keeps
-                      # counting as open.
-                      comm += (gh_json("repos/%s/issues/%s/comments?per_page=100"
-                                       % (REPO, nr)) or [])
+                          if (is_complete_bot_review(r, sha)
+                                  and r.get("commit_id") == sha):
+                              exact_found.append({
+                                  "body": r.get("body") or "",
+                                  "created_at": r.get("submitted_at") or "",
+                                  "html_url": r.get("html_url") or "",
+                              })
+                          # A final PR-head review is a fallback only. The graph
+                          # helper above proves a normal merge into dev and exact
+                          # membership in that PR's second-parent range.
+                          if (review_head
+                                  and review_head != sha
+                                  and r.get("commit_id") == review_head
+                                  and is_complete_bot_review(r, review_head)):
+                              fallback_found.append({
+                                  "body": r.get("body") or "",
+                                  "created_at": r.get("submitted_at") or "",
+                                  "html_url": r.get("html_url") or "",
+                                  "review_head": review_head,
+                              })
+                      # PR issue comments can answer findings posted as PR reviews.
+                      # Exact commit comments are already in `commit_comments`;
+                      # comments at a qualifying fallback head are added afterwards.
+                      pr_comments += paginated_gh(
+                          "repos/%s/issues/%s/comments?per_page=100" % (REPO, nr))
+                  found = prefer_exact_review_evidence(
+                      exact_found, fallback_found)
+                  # A fallback finding belongs to the reviewed PR head. Accept
+                  # authorised responses attached to that exact commit as well as
+                  # the existing PR-issue responses.
+                  head_comments = {}
+                  for review_head in response_comment_heads(fallback_found, sha):
+                      head_comments[review_head] = paginated_gh(
+                          "repos/%s/commits/%s/comments?per_page=100"
+                          % (REPO, review_head))
                   if not found:
                       without.append((sha, subject))
                       continue
 
-                  newest = max(found, key=lambda c: c.get("created_at") or "")
-                  body = newest.get("body") or ""
-                  m = re.search(r"airforce-schwere hoch=(\d+)", body)
-                  # Old comments do not carry the marker - then read the table.
-                  # If the marker is missing, nothing is waved through.
-                  count = int(m.group(1)) if m else len(re.findall(r"\|\s*hoch\s*\|", body))
-                  if count:
+                  # Exact evidence controls coverage, but findings from the final
+                  # reviewed PR head remain independently binding. This preserves
+                  # both directions: a clean head cannot erase an earlier exact
+                  # high, and an earlier clean review cannot erase a head high.
+                  for newest in latest_finding_evidence(
+                          exact_found, fallback_found):
+                      body = newest.get("body") or ""
+                      count = high_finding_count(body)
+                      if not count:
+                          continue
+                      response_sha = review_response_sha(newest, sha)
+                      answer_comments = response_comments_for_evidence(
+                          newest, sha, commit_comments, pr_comments, head_comments)
                       # WHO MAY ANSWER (review finding `hoch`, 28.08.2026).
                       # `#erledigt` / `#fehlalarm` closes a finding and opens
                       # the gate - and this regex ran over EVERY comment
@@ -557,14 +813,9 @@ jobs:
                           if not login:
                               return False
                           if login not in _rights:
-                              d = gh_json("repos/%s/collaborators/%s/permission"
-                                          % (REPO, login))
-                              if d is None:
-                                  # The lookup itself failed. Do not guess in
-                                  # either direction - refuse, and say so
-                                  # where someone will read it.
-                                  print("::warning::cannot verify write access for "
-                                        "%s - answer not counted" % login)
+                              d = required_gh_json(
+                                  "repos/%s/collaborators/%s/permission"
+                                  % (REPO, login))
                               _rights[login] = (d or {}).get("permission") or ""
                           return _rights[login] in ("admin", "write")
 
@@ -575,9 +826,14 @@ jobs:
                               return False
                           return _write_right((c.get("user") or {}).get("login"))
 
-                      answered = any(_is_answer(c) for c in comm)
-                      if not answered:
-                          high.append((sha, subject, count,
+                      answered = any(_is_answer(c) for c in answer_comments)
+                      if answered:
+                          continue
+                      high_key = (response_sha,
+                                  newest.get("html_url") or "")
+                      if high_key not in high_keys:
+                          high_keys.add(high_key)
+                          high.append((response_sha, subject, count,
                                        newest.get("html_url") or ""))
 
           if without or high:
