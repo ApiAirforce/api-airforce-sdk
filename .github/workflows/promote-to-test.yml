@@ -648,15 +648,46 @@ jobs:
               TRUSTED_BOTS = ("github-actions[bot]", "dependabot[bot]")
 
               def commit_is_trusted_bot(sha):
+                  # Two facts, both server-side in THIS repository: the commit
+                  # belongs to a merged PR opened by the allow-listed bot, AND
+                  # every commit of that PR was made by the bot and signed by
+                  # GitHub. A write-capable contributor can push onto a bot PR's
+                  # head or land extra tree changes at merge time; such a commit
+                  # carries their identity or no GitHub signature, so the whole
+                  # PR loses the exemption and its commits need their review.
                   pulls = paginated_gh(
                       "repos/%s/commits/%s/pulls?per_page=100" % (REPO, sha))
                   for p in pulls:
                       base_repo = ((p.get("base") or {}).get("repo") or {}).get("full_name")
                       user = p.get("user") or {}
-                      if (p.get("merged_at")
+                      nr = p.get("number")
+                      if not (p.get("merged_at") and nr
                               and base_repo == REPO
                               and user.get("type") == "Bot"
                               and user.get("login") in TRUSTED_BOTS):
+                          continue
+                      commits = paginated_gh(
+                      "repos/%s/pulls/%s/commits?per_page=100" % (REPO, nr))
+                      # The PR commit list is capped at 250 entries by GitHub and
+                      # never contains the merge or squash commit created at
+                      # merge time. So: reject a list that does not match the
+                      # PR's own commit count, and exempt `sha` only when it IS
+                      # one of the validated commits - a platform merge commit
+                      # is handled by the merged-PR rule above, anything else
+                      # needs its review (round-3 review findings).
+                      if not commits or len(commits) != (p.get("commits") or -1):
+                          continue
+                      if sha not in {c.get("sha") for c in commits}:
+                          continue
+                      if all(
+                          (c.get("author") or {}).get("type") == "Bot"
+                          and (c.get("author") or {}).get("login") == user.get("login")
+                          and (((c.get("commit") or {}).get("committer") or {}).get("email")
+                               == "noreply@github.com")
+                          and (((c.get("commit") or {}).get("verification") or {}).get("verified")
+                               is True)
+                          for c in commits
+                      ):
                           return True
                   return False
 
