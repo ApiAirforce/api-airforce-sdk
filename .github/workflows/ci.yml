@@ -6,12 +6,18 @@ name: CI
 
 on:
   push:
-    # `dev` und `test` gehoeren dazu, seit die Kette dev -> test -> main gilt:
-    # das Tor in promote-to-test.yml liest die Check-Runs am dev-Kopf. Liefe CI
-    # weiterhin nur auf `main`, faende es dort NICHTS - und ein Tor, das nichts
-    # findet, geht nie auf.
+    # `dev` and `test` are included since the chain dev -> test -> main applies:
+    # the gate in promote-to-test.yml reads the check runs on the dev head. If
+    # CI only ran on `main`, the gate would find NOTHING there - and a gate that
+    # finds nothing never opens.
     branches: [main, dev, test]
   pull_request:
+  # A push made with GITHUB_TOKEN starts no workflows. The automatic
+  # main -> dev sync merges as the Actions bot, so its merge commit on `dev`
+  # carries no check runs and the gate holds with "a required check NEVER
+  # STARTED" (measured 2026-09-02 on 815fd62a). This lets a person start CI
+  # on that head: gh workflow run ci.yml --ref dev
+  workflow_dispatch:
 
 permissions:
   contents: read
