@@ -567,7 +567,7 @@ class ReviewGateFixtures(unittest.TestCase):
 
     def test_sdk_review_gate_is_enabled(self):
         workflow = GATE_WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("DURCHSICHT_NOETIG: 'ja'", workflow)
+        self.assertIn("REVIEW_REQUIRED: 'yes'", workflow)
 
     def test_short_no_hunk_diff_is_preserved_verbatim(self):
         body = "diff --git a/old.txt b/new.txt\nsimilarity index 100%\n"
