@@ -102,7 +102,7 @@ env:
   # Deliberately NOT included: `review` - a red review run says nothing about
   # whether a review is attached to the commit. Point 2 checks that directly
   # at the commit.
-  PFLICHT: |
+  REQUIRED_CHECKS: |
     TypeScript
     Java
     Go
@@ -111,10 +111,10 @@ env:
     PHP
     Dart
     Rust
-  TITEL: 'dev kommt nicht nach test'
+  ISSUE_TITLE: 'dev kommt nicht nach test'
   # `dev` accepts reviewed PRs only. Their branch commits are present after a
   # merge and carry the exact-SHA reviews that the gate verifies below.
-  DURCHSICHT_NOETIG: 'ja'
+  REVIEW_REQUIRED: 'yes'
 
 jobs:
   tor:
@@ -137,10 +137,10 @@ jobs:
           import json, os, re, subprocess, sys, time
 
           REPO = os.environ["REPO"]
-          TITEL = os.environ["TITEL"]
+          ISSUE_TITLE = os.environ["ISSUE_TITLE"]
           EVENT = os.environ.get("EVENT") or ""
           WR_BRANCH = os.environ.get("WR_BRANCH") or ""
-          PFLICHT = [z.strip() for z in (os.environ.get("PFLICHT") or "").splitlines()
+          REQUIRED_CHECKS = [z.strip() for z in (os.environ.get("REQUIRED_CHECKS") or "").splitlines()
                      if z.strip()]
           CODE = (".rs", ".ts", ".tsx", ".js", ".mjs", ".py", ".sql", ".toml",
                   ".yml", ".yaml", ".json")
@@ -177,7 +177,7 @@ jobs:
           def report(reason, lines):
               """One issue instead of a red run - see the header."""
               with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
-                  f.write("## %s\n\n%s\n\n%s\n" % (TITEL, reason, "\n".join(lines)))
+                  f.write("## %s\n\n%s\n\n%s\n" % (ISSUE_TITLE, reason, "\n".join(lines)))
               print(reason)
               for z in lines:
                   print("  " + z)
@@ -188,20 +188,20 @@ jobs:
               ]
               old = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
               number = next((i["number"] for i in old
-                             if i.get("title") == TITEL and "pull_request" not in i), None)
+                             if i.get("title") == ISSUE_TITLE and "pull_request" not in i), None)
               if number:
                   subprocess.run(["gh", "issue", "edit", str(number), "-R", REPO,
                                   "--body", "\n".join(body)],
                                  capture_output=True, text=True)
               else:
                   subprocess.run(["gh", "issue", "create", "-R", REPO,
-                                  "--title", TITEL, "--body", "\n".join(body)],
+                                  "--title", ISSUE_TITLE, "--body", "\n".join(body)],
                                  capture_output=True, text=True)
 
           def close_issue(text):
               old = gh_json("repos/%s/issues?state=open&per_page=100" % REPO) or []
               number = next((i["number"] for i in old
-                             if i.get("title") == TITEL and "pull_request" not in i), None)
+                             if i.get("title") == ISSUE_TITLE and "pull_request" not in i), None)
               if number:
                   subprocess.run(["gh", "issue", "close", str(number), "-R", REPO,
                                   "--comment", text], capture_output=True, text=True)
@@ -364,7 +364,7 @@ jobs:
           # Both states still hold the gate; neither is a verdict about `dev`.
           # But they call for different actions, so they no longer share a
           # sentence.
-          missing = [n for n in PFLICHT if n not in st]
+          missing = [n for n in REQUIRED_CHECKS if n not in st]
           if missing:
               report(
                   "A required check NEVER STARTED on the `dev` head.",
@@ -385,7 +385,7 @@ jobs:
                    "Head: `%s`" % dev[:8]])
               sys.exit(0)
 
-          pending = [n for n in PFLICHT
+          pending = [n for n in REQUIRED_CHECKS
                      if n in st and st[n].get("status") != "completed"]
           if pending:
               report(
@@ -406,7 +406,7 @@ jobs:
 
           # `skipped`/`neutral` is not a failure: a job its own `if` skipped
           # has nothing to say - but it must not block anything either.
-          red = [n for n in PFLICHT
+          red = [n for n in REQUIRED_CHECKS
                  if st.get(n, {}).get("conclusion") not in ("success", "skipped", "neutral")]
           if red:
               lines = ["Red on `%s`:" % dev[:8], ""]
@@ -425,7 +425,7 @@ jobs:
           # ---- Point 2+3: review and open findings ---------------------------
           without, high = [], []
           high_keys = set()
-          DURCHSICHT = (os.environ.get("DURCHSICHT_NOETIG") or "ja").lower() == "ja"
+          REVIEW_REQUIRED = (os.environ.get("REVIEW_REQUIRED") or "yes").lower() == "yes"
 
           # BEGIN GATE_REVIEW_HELPERS
           REVIEW_BOT = "github-actions[bot]"
@@ -601,7 +601,7 @@ jobs:
               return visible
           # END GATE_REVIEW_HELPERS
 
-          if not DURCHSICHT:
+          if not REVIEW_REQUIRED:
               print("The automated review gate is disabled for this repository.")
               raw = ""
           else:
@@ -905,7 +905,7 @@ jobs:
           # happen in this run at all.
           text = ("`test` %s onto `%s` (%s commit(s) from `dev`). All required checks green%s."
                   % ("created" if creating else "fast-forwarded", dev[:8], count,
-                     ", every review present, no open finding `hoch`" if DURCHSICHT
+                     ", every review present, no open finding `hoch`" if REVIEW_REQUIRED
                      else "; the review is NOT checked in this repo"))
           print(text)
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
