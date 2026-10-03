@@ -129,34 +129,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail
-          # `--head test` FILTERT NUR DEN ZWEIGNAMEN (Befund `hoch`).
-          # A fork can have a pull request open with head `test`; without
-          # `isCrossRepository == false` the bot would overwrite its body and
-          # treat it as the release pull request. Same gap as on 25.08. in
-          # sync-main-to-dev.
-          # DER EIGENTUEMER GEHOERT IN DEN FILTER, NICHT ERST IN JQ
-          # (finding `mittel`, 26.08.2026). Without `--limit`, `gh pr list`
-          # returns at most 30 hits, and the fork exclusion ran only after
-          # that - thirty newer fork pull requests with head `test` would have
-          # pushed the real release pull request out of the set. `EXISTING`
-          # would have stayed empty and `gh pr create` would have failed on the
-          # vorhandenen internen PR gescheitert.
-          # `owner:zweig` schraenkt serverseitig ein; `isCrossRepository`
-          # bleibt als zweiter Riegel stehen.
-          # UEBER DIE API, NICHT UEBER `gh pr list` (nachgemessen
-          # 26.08.2026). `gh pr list --head` takes ONLY the bare branch name -
-          # `--head owner:branch` returns EMPTY there. Proven on a pull request
-          # we knew existed:
+          # A FILTER ON THE BARE BRANCH NAME `test` IS NOT ENOUGH (finding
+          # `hoch`): a fork can have a pull request open with head `test`, and
+          # without the repository check the bot would overwrite its body and
+          # treat it as the release pull request. sync-main-to-dev had the same
+          # gap.
+          # THE OWNER BELONGS IN THE SERVER-SIDE FILTER, NOT ONLY IN JQ
+          # (finding `mittel`): when forks are filtered out only after a page of
+          # results, thirty newer fork pull requests with head `test` push the
+          # real release pull request out of the set; `EXISTING` stays empty and
+          # `gh pr create` fails on the existing internal pull request.
+          # USE THE API, NOT `gh pr list`: `gh pr list --head` takes ONLY the
+          # bare branch name, and `--head owner:branch` returns EMPTY there.
+          # Measured on a pull request known to exist:
           #   gh pr list --head ci/45-pfadfilter             -> 46
-          #   gh pr list --head ApiAirforce:ci/45-pfadfilter -> (leer)
+          #   gh pr list --head ApiAirforce:ci/45-pfadfilter -> (empty)
           #   gh api ...pulls?head=ApiAirforce:ci/45-...     -> 46
-          # Without the owner in the filter the fork exclusion only bites after
-          # the page boundary, though - thirty newer fork pull requests with
-          # head `test` would have displaced the real release pull request.
-          # Die rohe API kann `head=owner:zweig` serverseitig. Der
-          # Comparing against the full repository stays as a second bolt; jq
-          # reads the environment via `env`, because `gh api --jq` has no
-          # `--arg` kennt.
+          # The raw API filters `head=owner:branch` server-side. Comparing the
+          # head repository with this repository stays as a second bolt; jq
+          # reads it via `env` because `gh api --jq` has no `--arg`.
           EXISTING=$(gh api \
             "repos/$GITHUB_REPOSITORY/pulls?state=open&base=main&head=$GITHUB_REPOSITORY_OWNER:test&per_page=100" \
             --jq '[.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)][0].number // empty')
@@ -164,7 +155,7 @@ jobs:
           if [ -n "$EXISTING" ]; then
             # Carry the TITLE along too (finding `niedrig`): otherwise it keeps
             # the number from when it was created and advertises a wrong
-            # Release-Groesse.
+            # release size.
             gh pr edit "$EXISTING" --title "$TITEL" --body-file /tmp/body.md
             echo "PR #$EXISTING updated"
             echo "PR=$EXISTING" >> "$GITHUB_ENV"
