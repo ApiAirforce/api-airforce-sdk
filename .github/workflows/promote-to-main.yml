@@ -1,9 +1,8 @@
-# UEBERNOMMEN AUS api-airforce-backend (26.08.2026, backend#307).
-# Fuenf von sieben Repos hatten keinen Schritt von `test` nach `main` -
-# was das Tor nach `test` schob, blieb dort liegen, und niemandem fiel es
-# auf, weil nichts rot wurde: es lief schlicht nichts. Die Datei ist
-# repo-unabhaengig, sie braucht nur `git` und `gh`.
-# Aenderungen bitte in allen sieben nachziehen.
+# Taken over from api-airforce-backend (backend#307). Without a step from
+# `test` to `main`, whatever the gate moves to `test` stays there unnoticed:
+# nothing turns red because nothing runs. The file is repository-independent
+# and needs only `git` and `gh`; mirror changes in the other repositories
+# that carry it.
 name: promote-to-main
 
 # Opens a release PR from `test` to `main` when a candidate lands on `test`.
@@ -48,7 +47,7 @@ permissions:
 env:
   AUTO_MERGE: "false"
 
-# SUCHEN UND ANLEGEN SIND NICHT ATOMAR (Befund `mittel`, 26.08.2026).
+# SEARCHING AND CREATING ARE NOT ATOMIC (finding `mittel`).
 # Without this group two quick pushes can both fail to find a pull request -
 # one then trips over the one created in the meantime, or an older run writes
 # a stale body last. NOT `cancel-in-progress`: the later state should win, but
