@@ -66,6 +66,8 @@ jobs:
           MODEL: ${{ vars.PULLFROG_MODEL }}
           CONTEXT: ${{ vars.PULLFROG_CONTEXT }}
           MAX_OUTPUT: ${{ vars.PULLFROG_MAX_OUTPUT }}
+          # Requested service tier: priority (default when unset), fast, none or off.
+          SERVICE_TIER: ${{ vars.PULLFROG_SERVICE_TIER }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUM: ${{ github.event.pull_request.number || inputs.pr }}
@@ -77,6 +79,13 @@ jobs:
           BASE = (os.environ.get("BASE") or "").rstrip("/")
           KEY = os.environ.get("KEY") or ""
           MODEL = os.environ.get("MODEL") or "gpt-6-sol"
+          # FAST MODE: unset requests `priority`, `fast` is the documented alias and none/off
+          # sends no tier. Only a known tier named by the answer counts; else UNVERIFIED.
+          SERVICE_TIER = {"": "priority", "priority": "priority", "fast": "fast", "none": "",
+                          "off": ""}.get((os.environ.get("SERVICE_TIER") or "").strip().lower())
+          if SERVICE_TIER is None:
+              sys.exit("Model call failed: PULLFROG_SERVICE_TIER must be priority, fast, none or off")
+          KNOWN_TIERS, OBSERVED_TIERS = ("priority", "fast", "default", "flex", "auto", "scale"), []
           REPO = os.environ["REPO"]
           PR = os.environ.get("PR_NUM") or ""
           # HOW MUCH DIFF FITS IN ONE PASS - DERIVED, NOT DECLARED.
@@ -863,7 +872,7 @@ jobs:
                            "Content-Type": "application/json",
                            "Accept": "text/event-stream"},
                   method="POST")
-              stuecke, usage, probe, grund = [], {}, [], ""
+              stuecke, usage, probe, grund, tier = [], {}, [], "", None
               # `fertig` haelt fest, ob der Strom ORDENTLICH endete.
               # `kaputt` zaehlt Ereignisse, die sich nicht lesen liessen.
               fertig, kaputt = False, 0
@@ -900,7 +909,8 @@ jobs:
                       print("relay stroemt nicht - Antwort direkt uebernommen",
                             file=sys.stderr)
                       return {"choices": [{"message": {"content": t}}],
-                              "usage": ganz.get("usage") or {}}
+                              "usage": ganz.get("usage") or {},
+                              "service_tier": ganz.get("service_tier")}
                   def _ereignisse(strom):
                       """SSE-Ereignisse statt Zeilen.
 
@@ -951,6 +961,7 @@ jobs:
                           raise _RelayFehler(*_f)
                       if brocken.get("usage"):
                           usage = brocken["usage"]
+                      tier = brocken.get("service_tier") or tier
                       for w in brocken.get("choices") or []:
                           # DEN ABSCHLUSSGRUND MITSCHNEIDEN. Steht er auf
                           # `content_filter` oder `length`, war die Antwort
@@ -1005,7 +1016,8 @@ jobs:
                   # jetzt fehlt. Eine Durchsicht mit Loechern ist schlimmer
                   # als eine langsame.
                   raise _StromUnbrauchbar("%d unlesbare Ereignisse im Strom" % kaputt)
-              return {"choices": [{"message": {"content": text}}], "usage": usage}
+              return {"choices": [{"message": {"content": text}}], "usage": usage,
+                      "service_tier": tier}
 
           def call(payload):
               req = urllib.request.Request(
@@ -1138,6 +1150,8 @@ jobs:
                                       {"role": "user", "content": user_text}],
                          "max_completion_tokens": MAX_OUT,
                          "reasoning_effort": "xhigh"}
+              if SERVICE_TIER:
+                  payload["service_tier"] = SERVICE_TIER
               out = None
               while out is None:
                   try:
@@ -1188,7 +1202,7 @@ jobs:
                                     "not_found_error", "insufficient_quota")
                       if getattr(e, "typ", "") in _DAUERHAFT:
                           print(f"Model call failed: relay meldete {e!s} "
-                                f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
+                                f"(typ={e.typ}, HTTP 200, service_tier={SERVICE_TIER or 'NONE'}) - dauerhaft, keine "
                                 f"Wiederholung", file=sys.stderr)
                           sys.exit(1)
                       if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
@@ -1238,7 +1252,8 @@ jobs:
                           time.sleep(p)
                           continue
                       # A reviewer that could not run must fail loudly, not pass as clean.
-                      print(f"Model call failed: HTTP {e.code}: {_leib[:300]!r}", file=sys.stderr)
+                      print(f"Model call failed: HTTP {e.code} (service_tier={SERVICE_TIER or 'NONE'}; "
+                            f"PULLFROG_SERVICE_TIER=off omits it): {_leib[:300]!r}", file=sys.stderr)
                       sys.exit(1)
                   # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
                   # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
@@ -1267,7 +1282,10 @@ jobs:
 
               text = out["choices"][0]["message"]["content"] or ""
               usage = out.get("usage", {})
-              print(f"model={out.get('model')} tokens: {usage}")
+              _tier = out.get("service_tier")
+              OBSERVED_TIERS.append(_tier if _tier in KNOWN_TIERS else "UNVERIFIED")
+              print(f"model={out.get('model')} tokens: {usage} tier requested="
+                    f"{SERVICE_TIER or 'NONE'} observed={OBSERVED_TIERS[-1]}")
 
               if expected_batches is not None or expected_paths is not None:
                   if expected_batches is None or expected_paths is None:
@@ -1450,7 +1468,9 @@ jobs:
           incomplete = parse_kaputt or bool(dropped) or reconciliation_failed
           marker = (incomplete_review_marker(head) if incomplete
                     else complete_review_marker(head))
-          lines += ["", f"_{MODEL} · api.airforce_", severity_marker(findings), marker]
+          lines += ["", f"_{MODEL} · api.airforce · tier requested {SERVICE_TIER or 'NONE'}, "
+                        f"observed {', '.join(sorted(set(OBSERVED_TIERS))) or 'UNVERIFIED'}_",
+                    severity_marker(findings), marker]
           body = "\n".join(lines)
 
           comments = [{"path": f["path"], "line": int(f["line"]), "side": "RIGHT",
