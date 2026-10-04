@@ -118,10 +118,8 @@ jobs:
               r"|[^/]*\.generated\.[a-z]+|[^/]*snapshot[^/]*\.json)$")
           UNKNOWN_PATH = "(unknown diff payload)"
 
-
           class _UnsplittableDiff(RuntimeError):
               """A diff part cannot be divided without silently losing content."""
-
 
           def _git_c_unquote(token):
               """Decode one complete Git C-quoted path token."""
@@ -155,7 +153,6 @@ jobs:
                       return None
               return data.decode("utf-8", "surrogateescape")
 
-
           def _git_path_value(raw):
               """Read one Git metadata pathname without splitting ordinary spaces."""
               token = raw.rstrip("\r\n")
@@ -168,7 +165,6 @@ jobs:
                   raise ValueError(f"invalid Git path token: {raw!r}")
               return value
 
-
           def diff_marker_path(line, prefix):
               """Decode an authoritative ---/+++ marker and remove a/ or b/."""
               if not (line.startswith("--- ") or line.startswith("+++ ")):
@@ -180,7 +176,6 @@ jobs:
                   raise ValueError(
                       f"Git file marker does not start with {prefix!r}: {line!r}")
               return value[len(prefix):]
-
 
           def diff_target_path(body):
               """Derive the target path only from metadata before the first hunk."""
@@ -203,7 +198,6 @@ jobs:
                       copy_target = _git_path_value(line[len("copy to "):])
               return rename_target or copy_target or UNKNOWN_PATH
 
-
           def diff_chunks(raw_diff):
               """Group complete file diffs before deriving any pathname."""
               if not raw_diff.strip():
@@ -218,21 +212,17 @@ jobs:
                   bodies.append("".join(current))
               return [(diff_target_path(body), body) for body in bodies]
 
-
           def dropped_paths(parts):
               """Keep an explicit label even when a batch path is unknown."""
               return [path or UNKNOWN_PATH for path, _ in parts]
-
 
           def changed_path_manifest(raw_diff):
               """Return each derived target path once, in diff order."""
               return list(dict.fromkeys(path for path, _ in diff_chunks(raw_diff)))
 
-
           def batch_paths(parts):
               """Return each path represented by one batch once."""
               return list(dict.fromkeys(path or UNKNOWN_PATH for path, _ in parts))
-
 
           def body_only_findings(findings):
               """Copy global findings without pretending they have diff positions."""
@@ -242,7 +232,6 @@ jobs:
                   item.pop("line", None)
                   result.append(item)
               return result
-
 
           def make_batch_report(batch_id, paths, summary, facts, findings):
               """Keep the structured evidence required by the global pass."""
@@ -254,7 +243,6 @@ jobs:
                   "findings": list(findings),
               }
 
-
           def reports_cover_manifest(changed_paths, reports):
               """Require successful reports to cover exactly the changed manifest."""
               reported = {
@@ -263,7 +251,6 @@ jobs:
                   for path in report.get("paths", [])
               }
               return bool(reports) and reported == set(changed_paths)
-
 
           def reconciliation_text(changed_paths, reports):
               """Build one indivisible final request from every structured report."""
@@ -278,7 +265,6 @@ jobs:
                   + json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
               )
 
-
           def _exact_coverage(actual, expected):
               """Accept each expected unique string exactly once, in any order."""
               return (
@@ -287,7 +273,6 @@ jobs:
                   and len(actual) == len(expected)
                   and set(actual) == set(expected)
               )
-
 
           def review_envelope_is_valid(verdict):
               """Require every top-level review field instead of defaulting it."""
@@ -306,7 +291,6 @@ jobs:
                   and (verdict.get("verdict") != "findings"
                        or bool(verdict["findings"]))
               )
-
 
           def parse_reconciliation_response(text, expected_batches, expected_paths):
               """Parse the final body-only review and prove exact input coverage."""
@@ -352,7 +336,6 @@ jobs:
                           verdict.get("covered_paths"), expected_paths)):
                   broken = True
               return summary, findings, broken
-
 
           def _split_file(path, body, limit):
               """A single file bigger than one batch, cut at hunk boundaries.
@@ -491,7 +474,6 @@ jobs:
                       "discarding content")
               return teile
 
-
           def budget_batches(raw_diff, limit=MAX_DIFF):
               """Split the diff into batches of at most `limit` chars each.
           
@@ -526,7 +508,6 @@ jobs:
                   stapel.append(cur)
               return stapel
 
-
           def resplit_batch(parts, current_limit, floor=40_000):
               """Shrink a refused batch from its actual payload, not its ceiling."""
               raw_diff = "".join(body for _, body in parts)
@@ -546,7 +527,6 @@ jobs:
                   return None, []
               return next_limit, batches
           # END REVIEW_BATCH_HELPERS
-
 
           class _ZuGross(Exception):
               """The upstream refused the request for its SIZE, not its content.
