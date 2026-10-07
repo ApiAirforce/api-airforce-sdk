@@ -47,16 +47,16 @@ jobs:
   review:
     if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    # 40 STATT 12 MINUTEN (26.08.2026). Gemessen ueber die letzten 40
-    # Laeufe je Repo: frontend 16 von 40 `cancelled` (40 %), status 9,
-    # modshield 4 - alle an dieser Kappe. `review-push.yml` steht aus
-    # genau dem Grund seit dem 23.08. auf 40: der langsamste
-    # ERFOLGREICHE Lauf brauchte 722 s bei einer Kappe von 720 s.
-    # Dieselbe Wiederhol-Leiter (5/20/60 s) steckt hier; drei Versuche
-    # passen rechnerisch nicht in zwoelf Minuten.
-    # Seit `dev` nur noch gemergte PRs annimmt, ist DIESE Datei der
-    # Hauptweg - und eine abgebrochene Durchsicht ist fuer das Tor
-    # dasselbe wie gar keine: sie haelt alle Fenster auf.
+    # 40 INSTEAD OF 12 MINUTES (26 August 2026). Measured over the last 40
+    # runs per repository: frontend 16 of 40 `cancelled` (40 %), status 9,
+    # modshield 4 - all at this cap. `review-push.yml` has been at 40 for
+    # exactly this reason since 23 August: the slowest
+    # SUCCESSFUL run took 722 s against a cap of 720 s.
+    # The same retry ladder (5/20/60 s) is in here; three attempts
+    # cannot fit into twelve minutes by arithmetic.
+    # Since `dev` accepts only merged PRs, THIS file is the
+    # main path - and for the gate an aborted review is the same
+    # as none: it holds up every window.
     timeout-minutes: 40
     steps:
       - name: Review the diff
@@ -410,22 +410,22 @@ jobs:
                   kopfzeile = zeilen_h[0]
                   m_at = _AT.match(kopfzeile)
                   stueck, laenge = [], 0
-                  alt_ab = neu_ab = 0        # schon verbrauchte Zeilen, alt und neu
-                  alt_h = neu_h = 0          # im laufenden Stueck
+                  alt_ab = neu_ab = 0        # already consumed lines, old and new
+                  alt_h = neu_h = 0          # in the current piece
                   erstes = True
 
                   def _kopf(a, n):
-                      """Der Header fuer einen Teil, der a alte / n neue Zeilen spaeter beginnt."""
+                      """The header for a part that starts a old / n new lines later."""
                       if not m_at or (a == 0 and n == 0):
                           return kopfzeile
-                      # Fehlender Zaehler heisst Laenge 1, nicht Laenge 0.
+                      # A missing count means length 1, not length 0.
                       a1, b1, c1, d1 = (int(x) if x is not None else 1
                                         for x in m_at.groups()[:4])
                       return "@@ -%d,%d +%d,%d @@ (continued)\n" % (
                           a1 + a, max(0, b1 - a), c1 + n, max(0, d1 - n))
 
                   for l in zeilen_h[1:]:
-                      _marke = l[:1]   # der echte Marker, vor jedem Schneiden
+                      _marke = l[:1]   # the real marker, before any cut
                       praefix = _kopf(alt_ab, neu_ab)
                       if laenge + len(l) + len(praefix) > budget:
                           if stueck:
@@ -434,16 +434,16 @@ jobs:
                               neu_ab += neu_h
                               stueck, laenge, alt_h, neu_h = [], 0, 0, 0
                               praefix = _kopf(alt_ab, neu_ab)
-                          # EINE EINZELNE ZEILE, DIE ALLEIN NICHT PASST, WIRD GETEILT.
-                          # Haesslich, aber begrenzt. Sie ungeteilt durchzulassen hiesse
-                          # einen Teil ueber der Grenze zu liefern, und genau daran
-                          # scheitert der Rueckfall.
-                          # DEN MARKER SICHERN, BEVOR GESCHNITTEN WIRD.
+                          # A SINGLE LINE THAT DOES NOT FIT ON ITS OWN IS SPLIT.
+                          # Ugly, but bounded. Letting it through unsplit would mean
+                          # delivering a part above the limit, and that is exactly where
+                          # the fallback fails.
+                          # SAVE THE MARKER BEFORE CUTTING.
                           #
-                          # Die Schleife unten schneidet vorne von `l` ab. Danach steht dort
-                          # Nutzinhalt, und `l[:1]` haelt ein beliebiges Zeichen fuer den
-                          # Diff-Marker - die Zeile wird gar nicht oder auf der falschen Seite
-                          # gezaehlt, und jede folgende Fortsetzung sitzt wieder daneben.
+                          # The loop below cuts from the front of `l`. Afterwards the payload
+                          # sits there, and `l[:1]` takes an arbitrary character for the
+                          # diff marker - the line is counted not at all or on the wrong side,
+                          # and every following continuation is off again.
                           _marke = l[:1]
                           while len(l) + len(praefix) > budget:
                               platz = max(1, budget - len(praefix))
@@ -794,18 +794,18 @@ jobs:
               return kopf + "\n\n" + "".join(b for _, b in teile)
 
           class _RelayFehler(Exception):
-              """Das Relay meldete einen Fehler - mit HTTP 200 im Rumpf.
+              """The relay reported an error - with HTTP 200 in the body.
 
-              `typ` traegt den maschinenlesbaren Fehlertyp, denn nicht
-              jeder 200er-Fehler ist ein Ratenlimit: ein Auth- oder
-              Anfragefehler aendert sich durch Warten nicht, und drei
-              Wiederholungen kosten dann nur 85 s fuer dieselbe Antwort.
+              `typ` carries the machine-readable error type, because not
+              every 200 error is a rate limit: an auth or request error
+              does not change by waiting, and three retries then only
+              cost 85 s for the same answer.
 
-              Gemessen: `{"error":{"type":"rate_limit_error"}}` kam
-              mit Status 200 zurueck. Die Wiederhol-Leiter kennt nur
-              HTTPError und Netzfehler und sah darin keinen Fehler - der
-              Aufruf fiel auf den nicht-stroemenden Weg, bekam dasselbe
-              und lief ins Job-Zeitlimit. EIN 2XX BELEGT KEINE LIEFERUNG.
+              Measured: `{"error":{"type":"rate_limit_error"}}` came back
+              with status 200. The retry ladder only knew HTTPError and
+              network errors and saw no error in it - the call fell
+              back to the non-streaming path, got the same answer
+              and ran into the job time limit. A 2XX PROVES NO DELIVERY.
               """
 
               def __init__(self, text, typ=""):
@@ -814,7 +814,7 @@ jobs:
 
 
           def _relay_fehler(d):
-              """Traegt die Antwort ein Fehlerobjekt? Dann den Text davon."""
+              """Does the response carry an error object? Then its text."""
               if not isinstance(d, dict):
                   return None
               f = d.get("error")
@@ -827,23 +827,23 @@ jobs:
 
 
           class _StromUnbrauchbar(Exception):
-              """Der Strom ist nicht als Durchsicht verwendbar.
+              """The stream cannot be used as a review.
 
-              Eigene Klasse, damit die Wiederhol-Leiter sie NICHT als
-              Netzfehler behandelt: dreimal dieselbe leere Antwort zu
-              holen kostet nur Zeit - genau das ist im ersten Anlauf
-              passiert (5 s, 20 s, 60 s Pause, dreimal leer). Der
-              Aufrufer faellt stattdessen einmal auf den
-              nicht-stroemenden Weg zurueck.
+              A class of its own so that the retry ladder does NOT treat
+              it as a network error: fetching the same empty answer three
+              times only costs time - exactly that happened on the first
+              attempt (5 s, 20 s, 60 s pause, empty three times). The
+              caller instead falls back once to the
+              non-streaming path.
               """
 
 
           def _stroemen(payload):
-              """Den Strom lesen und daraus dieselbe Form bauen wie sonst.
+              """Read the stream and build the same shape as otherwise.
 
-              Der Rest des Skripts liest `out["choices"][0]["message"]["content"]`
-              und `out["usage"]` - beides wird hier zusammengesetzt, damit
-              stromab nichts angefasst werden muss.
+              The rest of the script reads `out["choices"][0]["message"]["content"]`
+              and `out["usage"]` - both are assembled here so that nothing
+              downstream has to be touched.
               """
               req = urllib.request.Request(
                   BASE + "/chat/completions",
@@ -853,21 +853,21 @@ jobs:
                            "Accept": "text/event-stream"},
                   method="POST")
               stuecke, usage, probe, grund, tier = [], {}, [], "", None
-              # `fertig` haelt fest, ob der Strom ORDENTLICH endete.
-              # `kaputt` zaehlt Ereignisse, die sich nicht lesen liessen.
+              # `fertig` records whether the stream ended PROPERLY.
+              # `kaputt` counts events that could not be read.
               fertig, kaputt = False, 0
-              # 180 s gilt hier je LESEVORGANG, nicht fuer den ganzen Aufruf:
-              # solange Bytes kommen, laeuft er weiter. Eine Antwort darf also
-              # zehn Minuten dauern - sie darf nur nicht drei Minuten schweigen.
+              # 180 s applies here per READ, not to the whole call:
+              # as long as bytes arrive, it keeps going. An answer may therefore
+              # take ten minutes - it just must not stay silent for three.
               with urllib.request.urlopen(req, timeout=180) as resp:
-                  # WER `stream: true` IGNORIERT, SCHICKT NORMALES JSON.
-                  # Dann beginnt keine Zeile mit `data:` - unten wuerde
-                  # ALLES verworfen, `probe` bliebe leer, und derselbe
-                  # Prompt ginge ein ZWEITES Mal raus. Die erste Antwort
-                  # ist zu dem Zeitpunkt schon erzeugt UND ABGERECHNET.
-                  # Also am Inhaltstyp erkennen und direkt uebernehmen -
-                  # das ist zugleich der `message.content`-Weg, den der
-                  # Kommentar weiter unten vorsieht.
+                  # WHOEVER IGNORES `stream: true` SENDS PLAIN JSON.
+                  # Then no line starts with `data:` - below, EVERYTHING
+                  # would be discarded, `probe` would stay empty, and the same
+                  # prompt would go out a SECOND time. The first answer
+                  # has already been generated AND BILLED by then.
+                  # So detect it by the content type and take it over directly -
+                  # that is also the `message.content` path that the
+                  # comment further below provides for.
                   if "event-stream" not in (resp.headers.get_content_type() or ""):
                       try:
                           ganz = json.loads(resp.read().decode("utf-8", "replace"))
@@ -875,10 +875,10 @@ jobs:
                           raise _StromUnbrauchbar("Antwort war weder SSE noch JSON")
                       _f = _relay_fehler(ganz)
                       if _f:
-                          # Ein Fehlerobjekt hier ist KEIN unbrauchbarer
-                          # Strom: als solcher behandelt loeste es einen
-                          # unnoetigen Zweitaufruf aus, statt direkt auf
-                          # die Leiter zu gehen.
+                          # An error object here is NOT an unusable
+                          # stream: treated as one, it triggered an
+                          # unnecessary second call instead of going straight
+                          # to the ladder.
                           raise _RelayFehler(*_f)
                       w = (ganz.get("choices") or [{}])[0]
                       t = (((w.get("message") or {}).get("content") or "")
@@ -892,14 +892,14 @@ jobs:
                               "usage": ganz.get("usage") or {},
                               "service_tier": ganz.get("service_tier")}
                   def _ereignisse(strom):
-                      """SSE-Ereignisse statt Zeilen.
+                      """SSE events instead of lines.
 
-                      Ein Ereignis endet an der LEERZEILE, nicht am
-                      Zeilenumbruch, und darf mehrere `data:`-Zeilen
-                      tragen, die mit Zeilenumbruch zusammengehoeren.
-                      Wer je Zeile parst, zerlegt genau solche
-                      Ereignisse, zaehlt sie als kaputt und loest einen
-                      zweiten, ABGERECHNETEN Aufruf aus - fuer nichts.
+                      An event ends at the BLANK LINE, not at the
+                      line break, and may carry several `data:` lines
+                      that belong together, joined by line breaks.
+                      Parsing per line splits exactly such
+                      events, counts them as broken and triggers a
+                      second, BILLED call - for nothing.
                       """
                       teile = []
                       for roh in strom:
@@ -911,8 +911,8 @@ jobs:
                           if teile:
                               yield chr(10).join(teile)
                               teile = []
-                      # Ein letztes Ereignis ohne abschliessende Leerzeile
-                      # ist kein Fehler - der Strom endet einfach.
+                      # A last event without a closing blank line
+                      # is not an error - the stream simply ends.
                       if teile:
                           yield chr(10).join(teile)
 
@@ -923,48 +923,48 @@ jobs:
                       try:
                           brocken = json.loads(nutz)
                       except ValueError:
-                          # HIER KOMMT KEIN REST NACH. `for roh in resp`
-                          # liefert VOLLSTAENDIGE Zeilen - ein halbes JSON
-                          # kann gar nicht ankommen, und der naechste
-                          # Brocken bringt nichts nach. Was hier scheitert,
-                          # ist endgueltig weg. Zaehlen statt verschweigen:
-                          # unten entscheidet es ueber den Rueckfall.
+                          # NOTHING MORE FOLLOWS HERE. `_ereignisse` reads
+                          # COMPLETE lines and whole events - half a JSON object
+                          # cannot arrive, and the next chunk brings
+                          # nothing more. Whatever fails here
+                          # is gone for good. Count it instead of hiding it:
+                          # below, it decides the fallback.
                           kaputt += 1
                           continue
                       if len(probe) < 3:
                           probe.append(nutz[:300])
                       _f = _relay_fehler(brocken)
                       if _f:
-                          # Ein Fehlerobjekt im Strom ist kein leerer Strom.
-                          # Als solcher behandelt fuehrte es zum Rueckfall,
-                          # der denselben Fehler holt - und ins Zeitlimit.
+                          # An error object in the stream is not an empty stream.
+                          # Treated as one, it led to the fallback, which
+                          # fetches the same error - and runs into the time limit.
                           raise _RelayFehler(*_f)
                       if brocken.get("usage"):
                           usage = brocken["usage"]
                       tier = brocken.get("service_tier") or tier
                       for w in brocken.get("choices") or []:
-                          # DEN ABSCHLUSSGRUND MITSCHNEIDEN. Steht er auf
-                          # `content_filter` oder `length`, war die Antwort
-                          # abgeschlossen und damit BEZAHLT - dann sagt das
-                          # Protokoll unten, warum sie leer war, statt dass
-                          # wieder jemand raten muss.
+                          # RECORD THE FINISH REASON. If it is
+                          # `content_filter` or `length`, the answer was
+                          # complete and therefore PAID FOR - then the log
+                          # below says why it was empty, instead of someone
+                          # having to guess again.
                           if w.get("finish_reason"):
                               grund = w["finish_reason"]
-                          # Nicht nur `delta.content`: ein Relay, das einen
-                          # nicht-stroemenden Aufruf durchreicht, legt den Text
-                          # nach `message.content`. Beide Formen mitnehmen,
-                          # statt sich auf eine zu verlassen, die niemand
-                          # gemessen hat.
+                          # Not only `delta.content`: a relay that passes a
+                          # non-streaming call through puts the text
+                          # into `message.content`. Take both forms
+                          # instead of relying on one that nobody
+                          # has measured.
                           for feld in ("delta", "message"):
-                              # EIN REFUSAL TRAEGT SEINEN TEXT IN `refusal`,
-                              # NICHT IN `content`. Ohne dieses Feld sieht
-                              # eine abgeschlossene, bezahlte Ablehnung wie
-                              # ein leerer Strom aus - und loest den Rueckfall
-                              # aus, also einen ZWEITEN kostenpflichtigen
-                              # Aufruf desselben Prompts, der dieselbe
-                              # Ablehnung zurueckbringt. Den Text zu nehmen
-                              # ist besser als jeder Abbruch: die Durchsicht
-                              # bekommt eine Antwort statt eines Fehlers.
+                              # A REFUSAL CARRIES ITS TEXT IN `refusal`,
+                              # NOT IN `content`. Without this field a
+                              # completed, paid refusal looks like
+                              # an empty stream - and triggers the fallback,
+                              # that is, a SECOND paid
+                              # call of the same prompt that brings back the same
+                              # refusal. Taking the text
+                              # is better than any abort: the review
+                              # gets an answer instead of an error.
                               _w = w.get(feld) or {}
                               teil = (_w.get("content")
                                       or _w.get("refusal"))
@@ -973,28 +973,28 @@ jobs:
                                   break
               text = "".join(stuecke)
               if not text.strip():
-                  # KEIN STILLES DURCHWINKEN, ABER AUCH KEIN TOTALAUSFALL.
-                  # Gemessen am 25.08.: das Relay nimmt `stream: true` an,
-                  # liefert aber keinen Text. Welche Form es stattdessen
-                  # schickt, steht ab jetzt im Protokoll - das ist der
-                  # einzige Weg, sie zu sehen statt sie zu raten.
+                  # NO SILENT PASS, BUT NO TOTAL FAILURE EITHER.
+                  # Measured on 25 August: the relay accepts `stream: true`
+                  # but delivers no text. Which shape it sends instead
+                  # is in the log from now on - that is the
+                  # only way to see it instead of guessing it.
                   print("Strom ohne Inhalt (grund=%r, usage=%s). "
                         "Erste Brocken: %r"
                         % (grund, bool(usage), probe),
                         file=sys.stderr)
                   raise _StromUnbrauchbar("Strom ohne Inhalt")
               if not fertig:
-                  # EOF IST KEIN ABSCHLUSS. Ohne `[DONE]` steht hier zwar
-                  # Text, aber nur der Anfang - bricht eine Schicht den
-                  # Strom nach ein paar Deltas ab, sieht das Ergebnis wie
-                  # "wenig gefunden" aus. Genau die Verwechslung, gegen die
-                  # dieser Reviewer gebaut ist. Lieber langsam und ganz.
+                  # EOF IS NOT A COMPLETION. Without `[DONE]` there is text here,
+                  # but only the beginning - if a layer cuts the
+                  # stream after a few deltas, the result looks like
+                  # "little found". Exactly the confusion this
+                  # reviewer is built against. Better slow and complete.
                   raise _StromUnbrauchbar(
                       "Strom endete ohne [DONE] nach %d Zeichen" % len(text))
               if kaputt:
-                  # Ein unlesbares Ereignis kann Text getragen haben, der
-                  # jetzt fehlt. Eine Durchsicht mit Loechern ist schlimmer
-                  # als eine langsame.
+                  # An unreadable event may have carried text that
+                  # is now missing. A review with holes is worse
+                  # than a slow one.
                   raise _StromUnbrauchbar("%d unlesbare Ereignisse im Strom" % kaputt)
               return {"choices": [{"message": {"content": text}}], "usage": usage,
                       "service_tier": tier}
@@ -1005,18 +1005,18 @@ jobs:
                   data=json.dumps(payload).encode(),
                   headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"},
                   method="POST")
-              # STROEMEN, NICHT SCHWEIGEN (25.08.2026). Gemessen: unser Backend
-              # antwortet in 23-31 s (max 80 s) und protokollierte an einem Tag
-              # EINEN Fehler; nginx meldete EINEN 502. Die Reviewer-Jobs brauchten
-              # trotzdem 283 s im Schnitt, bis zu 1812 s, und 18 von 195 starben an
-              # `RemoteDisconnected` oder `TimeoutError` nach 600 s. Die
-              # gescheiterten Anfragen haben unser Backend also nie erreicht - eine
-              # Verbindung, ueber die minutenlang kein Byte geht, raeumt die Schicht
-              # davor ab, und der Client merkt es erst beim Lesen.
+              # STREAM, DO NOT GO SILENT (25 August 2026). Measured: our backend
+              # answers in 23-31 s (max 80 s) and logged ONE error in a day;
+              # nginx reported ONE 502. Yet the reviewer jobs took
+              # 283 s on average, up to 1812 s, and 18 of 195 died of
+              # `RemoteDisconnected` or `TimeoutError` after 600 s. So the
+              # failed requests never reached our backend - a connection
+              # that carries no byte for minutes is cleared by the layer
+              # in front of it, and the client notices only when it reads.
               #
-              # Im Strom fliessen Bytes ab dem ersten Denkschritt. Der Deckel liegt
-              # damit auf dem ERSTEN BYTE statt auf der Gesamtdauer - eine
-              # Gesamtgrenze begrenzt kein Schweigen.
+              # In a stream, bytes flow from the first reasoning step. The cap
+              # thus sits on the FIRST BYTE instead of the total duration - a
+              # total limit does not limit silence.
               strom = dict(payload)
               strom["stream"] = True
               strom["stream_options"] = {"include_usage": True}
@@ -1025,27 +1025,27 @@ jobs:
               except _RelayFehler as e:
                   if getattr(e, "typ", "") != "invalid_request_error":
                       raise
-                  # Ein invalid_request aus dem STROM-Aufruf kann auch die
-                  # stream-Felder selbst meinen - nicht nur reasoning_effort.
-                  # Die Leiter wuerde zweimal WIEDER mit Strom anrufen und
-                  # dann sterben. Der nicht-stroemende Pfad sendet die
-                  # stream-Felder gar nicht - also einmal dorthin. Kommt der
-                  # Fehler dort wieder, geht er regulaer auf die Leiter.
+                  # An invalid_request from the STREAM call may also concern the
+                  # stream fields themselves - not only reasoning_effort.
+                  # The ladder would call twice MORE with streaming and
+                  # then die. The non-streaming path does not send the
+                  # stream fields at all - so go there once. If the
+                  # error comes back there, it goes to the ladder as usual.
                   print("relay meldete invalid_request im Strom-Aufruf "
                         "(HTTP 200) - einmal ohne Strom", file=sys.stderr)
               except _StromUnbrauchbar as e:
-                  # Einmal ohne Strom. Besser eine langsame Durchsicht als
-                  # gar keine - und der GRUND gehoert ins Protokoll. Seit
-                  # die Ausnahme auch "EOF ohne [DONE]" und unlesbare
-                  # Ereignisse abdeckt, waere "leer" bei zwei von drei
-                  # Faellen gelogen und die Diagnose unsichtbar.
+                  # Once without streaming. A slow review is better than
+                  # none - and the REASON belongs in the log. Since
+                  # the exception also covers "EOF without [DONE]" and unreadable
+                  # events, "empty" would be a lie in two of three
+                  # cases and the diagnosis invisible.
                   print("Strom unbrauchbar (%s) - einmal ohne" % e,
                         file=sys.stderr)
               except urllib.error.HTTPError as e:
-                  # Kennt das Relay `stream` nicht, ist das KEIN fluechtiger
-                  # Fehler - einmal ohne das Feld, dann weiter wie frueher. Ein
-                  # Reviewer, der an einer Verbesserung stirbt, ist schlechter
-                  # als der langsame davor.
+                  # If the relay does not know `stream`, that is NOT a transient
+                  # error - once without the field, then on as before. A
+                  # reviewer that dies of an improvement is worse
+                  # than the slow one before it.
                   if e.code != 400:
                       raise
                   print("relay kennt stream nicht - einmal ohne", file=sys.stderr)
@@ -1057,32 +1057,32 @@ jobs:
                   method="POST")
               with urllib.request.urlopen(req, timeout=300) as resp:
                   _ganz = json.load(resp)
-              # AUCH HIER: Status 200, Fehler im Rumpf. Ohne diese Pruefung
-              # gaebe `out` ein Objekt ohne `choices` zurueck und der
-              # Reviewer stuerbe weiter unten an einem KeyError statt an
-              # dem Fehler, der wirklich vorliegt.
+              # HERE TOO: status 200, error in the body. Without this check
+              # `out` would return an object without `choices`, and the
+              # reviewer would die further down of a KeyError instead of
+              # the error that is really there.
               _f = _relay_fehler(_ganz)
               if _f:
                   raise _RelayFehler(*_f)
               return _ganz
 
-          # WIEDERHOLUNG BEI FLUECHTIGEN FEHLERN. Gemessen am 13.08.: eine
-          # durchsicht scheiterte an HTTP 502 "Upstream service temporarily
-          # unavailable" - aus UNSEREM eigenen relay. Ohne wiederholung erbt die
-          # durchsicht jeden schluckauf der plattform, die sie pruefen soll, und
-          # ein roter check ohne befund erzieht dazu, rote checks zu ignorieren.
-          # Bleibt es dauerhaft rot, faellt der lauf weiterhin LAUT durch.
+          # RETRY ON TRANSIENT ERRORS. Measured on 13 August: a
+          # review failed with HTTP 502 "Upstream service temporarily
+          # unavailable" - from OUR own relay. Without retries the review
+          # inherits every hiccup of the platform it is meant to check, and
+          # a red check without a finding teaches people to ignore red checks.
+          # If it stays red, the run still fails LOUDLY.
           FLUECHTIG = {429, 500, 502, 503, 504}
           PAUSEN = [5, 20, 60]
-          # WANN WIR AUFHOEREN, ES NOCHMAL ZU VERSUCHEN (26.08.2026).
-          # Beobachtet an app#27: das Relay meldet
+          # WHEN WE STOP TRYING AGAIN (26 August 2026).
+          # Observed on app#27: the relay reports
           #   relay meldete "Upstream HTTP/2 stream failed" (HTTP 200)
-          # und jeder Versuch haengt dabei rund FUENFZEHN Minuten. Drei
-          # davon passen nicht in die Kappe von 40 min - sie schneidet
-          # mitten im dritten ab, der Lauf endet `cancelled` statt rot,
-          # und es bleibt GAR NICHTS: dieselbe Leere, die dieser Ablauf
-          # verhindern soll. `review-push.yml` bremst so seit dem 23.08.;
-          # seit der PR-Pflicht ist DIESE Datei der Hauptweg.
+          # and each attempt hangs for about FIFTEEN minutes. Three
+          # of them do not fit into the 40 min cap - it cuts
+          # in the middle of the third, the run ends `cancelled` instead of red,
+          # and NOTHING AT ALL remains: the same void this workflow
+          # is meant to prevent. `review-push.yml` has throttled like this since 23 August;
+          # since PRs became mandatory, THIS file is the main path.
           AUFRUF_GRENZE = 900
           # A STREAM THAT DIES AFTER THIS LONG IS TREATED AS A SIZE REFUSAL.
           #
@@ -1099,16 +1099,16 @@ jobs:
           SCHLUSS = time.monotonic() + 34 * 60
 
           def zeit_fuer_neuen_versuch(pause):
-              """Passt Pause + ein ganzer Versuch noch vor die Kappe?"""
+              """Do the pause and one whole attempt still fit before the cap?"""
               return time.monotonic() + pause + AUFRUF_GRENZE < SCHLUSS
 
           def wechsel_passt_noch(was):
-              """Ein Wechsel OHNE Pause kostet trotzdem einen ganzen Versuch.
+              """A switch WITHOUT a pause still costs a whole attempt.
 
-              Befund `mittel`: die Kompatibilitaets-Kaskade sprang mit
-              `continue` in einen neuen vollen Aufruf - ohne Pause, aber
-              auch ohne Fristpruefung. Nahe SCHLUSS laeuft der ueber die
-              Kappe, und der Job endet `cancelled` statt laut rot.
+              Finding `mittel`: the compatibility cascade jumped with
+              `continue` into a new full call - without a pause, but
+              also without a deadline check. Near SCHLUSS that runs past the
+              cap, and the job ends `cancelled` instead of loudly red.
               """
               if zeit_fuer_neuen_versuch(0):
                   return True
@@ -1138,19 +1138,19 @@ jobs:
                       _versuch_ab = time.monotonic()
                       out = call(payload)
                   except _RelayFehler as e:
-                      # HTTP 200, Fehler im Rumpf. Ein Ratenlimit ist fluechtig
-                      # und gehoert auf die Leiter - ein Auth- oder Anfrage-
-                      # fehler aendert sich durch Warten nicht: 85 s Pause fuer
-                      # dreimal dieselbe Antwort, dann erst der laute Tod.
-                      # Der TYP entscheidet, nicht der Text - Fehlertexte sind
-                      # frei formuliert, eine Wortsuche darin klassifiziert
-                      # frueher oder spaeter falsch. Unbekannte Typen bleiben
-                      # auf der Leiter; die endet nach drei Versuchen laut.
-                      # `invalid_request_error` NICHT sofort fatal: der
-                      # HTTP-400-Zweig darunter besitzt eine Reparatur
-                      # (reasoning_effort max -> high -> ohne). Meldet das
-                      # Relay denselben Fall als 200er-Rumpf, gehoert ihm
-                      # dieselbe Reparatur - erst danach ist er dauerhaft.
+                      # HTTP 200, error in the body. A rate limit is transient
+                      # and belongs on the ladder - an auth or request
+                      # error does not change by waiting: 85 s of pauses for
+                      # the same answer three times, and only then the loud death.
+                      # The TYPE decides, not the text - error texts are
+                      # freely worded, and a word search in them misclassifies
+                      # sooner or later. Unknown types stay
+                      # on the ladder; it ends loudly after three attempts.
+                      # `invalid_request_error` is NOT fatal at once: the
+                      # HTTP 400 branch below has a repair
+                      # (reasoning_effort max -> high -> without). If the
+                      # relay reports the same case as a 200 body, the same
+                      # repair applies to it - only after that is it permanent.
                       # A size refusal must be classified before that compatibility
                       # ladder. Otherwise context_length_exceeded is resent unchanged
                       # with two reasoning settings before the diff is split.
@@ -1209,9 +1209,9 @@ jobs:
                       if _http_ist_zu_gross(
                               e.code, _leib, getattr(e, "reason", "")):
                           raise _ZuGross(_leib or str(e))
-                      # 400 ist KEIN transienter fehler: das relay kennt das feld nicht.
-                      # Einmal ohne das feld erneut - ohne wartezeit und ohne einen
-                      # der drei versuche zu verbrauchen.
+                      # 400 is NOT a transient error: the relay does not know the field.
+                      # Retry once without the field - with no wait and without using
+                      # one of the three attempts.
                       if e.code == 400:
                           stufe = payload.get("reasoning_effort")
                           if stufe == "max":
@@ -1235,22 +1235,22 @@ jobs:
                       print(f"Model call failed: HTTP {e.code} (service_tier={SERVICE_TIER or 'NONE'}; "
                             f"PULLFROG_SERVICE_TIER=off omits it): {_leib[:300]!r}", file=sys.stderr)
                       sys.exit(1)
-                  # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
-                  # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
-                  # Vererbung ist ConnectionResetError < ConnectionError < OSError -
-                  # `urllib.error.URLError` steht darin NICHT und `TimeoutError` auch
-                  # nicht. Der Abriss lief deshalb an dieser Leiter VORBEI, obwohl sie
-                  # genau dafuer gebaut ist: Rueckverfolgungsbericht, Ende, roter Haken.
-                  # Gemessen an acht gleichzeitig geoeffneten PRs - sieben Durchsichten
-                  # starben so, keine einzige hat eine Wartezeit oder ein Ersatzmodell
-                  # auch nur probiert.
+                  # ConnectionError BELONGS HERE (25 August 2026). A dropped
+                  # connection raises `http.client.RemoteDisconnected`, and its
+                  # inheritance is ConnectionResetError < ConnectionError < OSError -
+                  # `urllib.error.URLError` is NOT in it, and neither is `TimeoutError`.
+                  # So the drop went PAST this ladder, although it is
+                  # built for exactly that: traceback, end, red check.
+                  # Measured on eight PRs opened at the same time - seven reviews
+                  # died this way; not one even tried a wait or a fallback
+                  # model.
                   #
-                  # Das ist nicht bloss ein roter Haken: das Tor nach `test` verlangt je
-                  # Commit eine Durchsicht. Ein Abriss haelt also die Auslieferung ALLER
-                  # Fenster an, bis jemand von Hand neu startet.
+                  # This is not just a red check: the gate to `test` requires a
+                  # review per commit. A drop therefore halts delivery for ALL
+                  # windows until someone restarts by hand.
                   #
-                  # ConnectionError und nicht OSError - Letzteres saugt auch Datei- und
-                  # Rechtefehler ein und wiederholt sie als waeren es Netzfehler.
+                  # ConnectionError and not OSError - the latter also swallows file and
+                  # permission errors and retries them as if they were network errors.
                   except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
                       if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
                           p = PAUSEN.pop(0)
