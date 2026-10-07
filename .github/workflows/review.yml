@@ -66,6 +66,8 @@ jobs:
           MODEL: ${{ vars.PULLFROG_MODEL }}
           CONTEXT: ${{ vars.PULLFROG_CONTEXT }}
           MAX_OUTPUT: ${{ vars.PULLFROG_MAX_OUTPUT }}
+          # Requested service tier: priority (default when unset), fast, none or off.
+          SERVICE_TIER: ${{ vars.PULLFROG_SERVICE_TIER }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUM: ${{ github.event.pull_request.number || inputs.pr }}
@@ -77,6 +79,13 @@ jobs:
           BASE = (os.environ.get("BASE") or "").rstrip("/")
           KEY = os.environ.get("KEY") or ""
           MODEL = os.environ.get("MODEL") or "gpt-6-sol"
+          # FAST MODE: unset requests `priority`, `fast` is the documented alias and none/off
+          # sends no tier. Only a known tier named by the answer counts; else UNVERIFIED.
+          SERVICE_TIER = {"": "priority", "priority": "priority", "fast": "fast", "none": "",
+                          "off": ""}.get((os.environ.get("SERVICE_TIER") or "").strip().lower())
+          if SERVICE_TIER is None:
+              sys.exit("Model call failed: PULLFROG_SERVICE_TIER must be priority, fast, none or off")
+          KNOWN_TIERS, OBSERVED_TIERS = ("priority", "fast", "default", "flex", "auto", "scale"), []
           REPO = os.environ["REPO"]
           PR = os.environ.get("PR_NUM") or ""
           # HOW MUCH DIFF FITS IN ONE PASS - DERIVED, NOT DECLARED.
@@ -109,10 +118,8 @@ jobs:
               r"|[^/]*\.generated\.[a-z]+|[^/]*snapshot[^/]*\.json)$")
           UNKNOWN_PATH = "(unknown diff payload)"
 
-
           class _UnsplittableDiff(RuntimeError):
               """A diff part cannot be divided without silently losing content."""
-
 
           def _git_c_unquote(token):
               """Decode one complete Git C-quoted path token."""
@@ -146,7 +153,6 @@ jobs:
                       return None
               return data.decode("utf-8", "surrogateescape")
 
-
           def _git_path_value(raw):
               """Read one Git metadata pathname without splitting ordinary spaces."""
               token = raw.rstrip("\r\n")
@@ -159,7 +165,6 @@ jobs:
                   raise ValueError(f"invalid Git path token: {raw!r}")
               return value
 
-
           def diff_marker_path(line, prefix):
               """Decode an authoritative ---/+++ marker and remove a/ or b/."""
               if not (line.startswith("--- ") or line.startswith("+++ ")):
@@ -171,7 +176,6 @@ jobs:
                   raise ValueError(
                       f"Git file marker does not start with {prefix!r}: {line!r}")
               return value[len(prefix):]
-
 
           def diff_target_path(body):
               """Derive the target path only from metadata before the first hunk."""
@@ -194,7 +198,6 @@ jobs:
                       copy_target = _git_path_value(line[len("copy to "):])
               return rename_target or copy_target or UNKNOWN_PATH
 
-
           def diff_chunks(raw_diff):
               """Group complete file diffs before deriving any pathname."""
               if not raw_diff.strip():
@@ -209,21 +212,17 @@ jobs:
                   bodies.append("".join(current))
               return [(diff_target_path(body), body) for body in bodies]
 
-
           def dropped_paths(parts):
               """Keep an explicit label even when a batch path is unknown."""
               return [path or UNKNOWN_PATH for path, _ in parts]
-
 
           def changed_path_manifest(raw_diff):
               """Return each derived target path once, in diff order."""
               return list(dict.fromkeys(path for path, _ in diff_chunks(raw_diff)))
 
-
           def batch_paths(parts):
               """Return each path represented by one batch once."""
               return list(dict.fromkeys(path or UNKNOWN_PATH for path, _ in parts))
-
 
           def body_only_findings(findings):
               """Copy global findings without pretending they have diff positions."""
@@ -233,7 +232,6 @@ jobs:
                   item.pop("line", None)
                   result.append(item)
               return result
-
 
           def make_batch_report(batch_id, paths, summary, facts, findings):
               """Keep the structured evidence required by the global pass."""
@@ -245,7 +243,6 @@ jobs:
                   "findings": list(findings),
               }
 
-
           def reports_cover_manifest(changed_paths, reports):
               """Require successful reports to cover exactly the changed manifest."""
               reported = {
@@ -254,7 +251,6 @@ jobs:
                   for path in report.get("paths", [])
               }
               return bool(reports) and reported == set(changed_paths)
-
 
           def reconciliation_text(changed_paths, reports):
               """Build one indivisible final request from every structured report."""
@@ -269,7 +265,6 @@ jobs:
                   + json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
               )
 
-
           def _exact_coverage(actual, expected):
               """Accept each expected unique string exactly once, in any order."""
               return (
@@ -278,7 +273,6 @@ jobs:
                   and len(actual) == len(expected)
                   and set(actual) == set(expected)
               )
-
 
           def review_envelope_is_valid(verdict):
               """Require every top-level review field instead of defaulting it."""
@@ -297,7 +291,6 @@ jobs:
                   and (verdict.get("verdict") != "findings"
                        or bool(verdict["findings"]))
               )
-
 
           def parse_reconciliation_response(text, expected_batches, expected_paths):
               """Parse the final body-only review and prove exact input coverage."""
@@ -343,7 +336,6 @@ jobs:
                           verdict.get("covered_paths"), expected_paths)):
                   broken = True
               return summary, findings, broken
-
 
           def _split_file(path, body, limit):
               """A single file bigger than one batch, cut at hunk boundaries.
@@ -482,7 +474,6 @@ jobs:
                       "discarding content")
               return teile
 
-
           def budget_batches(raw_diff, limit=MAX_DIFF):
               """Split the diff into batches of at most `limit` chars each.
           
@@ -517,7 +508,6 @@ jobs:
                   stapel.append(cur)
               return stapel
 
-
           def resplit_batch(parts, current_limit, floor=40_000):
               """Shrink a refused batch from its actual payload, not its ceiling."""
               raw_diff = "".join(body for _, body in parts)
@@ -537,7 +527,6 @@ jobs:
                   return None, []
               return next_limit, batches
           # END REVIEW_BATCH_HELPERS
-
 
           class _ZuGross(Exception):
               """The upstream refused the request for its SIZE, not its content.
@@ -863,7 +852,7 @@ jobs:
                            "Content-Type": "application/json",
                            "Accept": "text/event-stream"},
                   method="POST")
-              stuecke, usage, probe, grund = [], {}, [], ""
+              stuecke, usage, probe, grund, tier = [], {}, [], "", None
               # `fertig` haelt fest, ob der Strom ORDENTLICH endete.
               # `kaputt` zaehlt Ereignisse, die sich nicht lesen liessen.
               fertig, kaputt = False, 0
@@ -900,7 +889,8 @@ jobs:
                       print("relay stroemt nicht - Antwort direkt uebernommen",
                             file=sys.stderr)
                       return {"choices": [{"message": {"content": t}}],
-                              "usage": ganz.get("usage") or {}}
+                              "usage": ganz.get("usage") or {},
+                              "service_tier": ganz.get("service_tier")}
                   def _ereignisse(strom):
                       """SSE-Ereignisse statt Zeilen.
 
@@ -951,6 +941,7 @@ jobs:
                           raise _RelayFehler(*_f)
                       if brocken.get("usage"):
                           usage = brocken["usage"]
+                      tier = brocken.get("service_tier") or tier
                       for w in brocken.get("choices") or []:
                           # DEN ABSCHLUSSGRUND MITSCHNEIDEN. Steht er auf
                           # `content_filter` oder `length`, war die Antwort
@@ -1005,7 +996,8 @@ jobs:
                   # jetzt fehlt. Eine Durchsicht mit Loechern ist schlimmer
                   # als eine langsame.
                   raise _StromUnbrauchbar("%d unlesbare Ereignisse im Strom" % kaputt)
-              return {"choices": [{"message": {"content": text}}], "usage": usage}
+              return {"choices": [{"message": {"content": text}}], "usage": usage,
+                      "service_tier": tier}
 
           def call(payload):
               req = urllib.request.Request(
@@ -1138,6 +1130,8 @@ jobs:
                                       {"role": "user", "content": user_text}],
                          "max_completion_tokens": MAX_OUT,
                          "reasoning_effort": "xhigh"}
+              if SERVICE_TIER:
+                  payload["service_tier"] = SERVICE_TIER
               out = None
               while out is None:
                   try:
@@ -1188,7 +1182,7 @@ jobs:
                                     "not_found_error", "insufficient_quota")
                       if getattr(e, "typ", "") in _DAUERHAFT:
                           print(f"Model call failed: relay meldete {e!s} "
-                                f"(typ={e.typ}, HTTP 200) - dauerhaft, keine "
+                                f"(typ={e.typ}, HTTP 200, service_tier={SERVICE_TIER or 'NONE'}) - dauerhaft, keine "
                                 f"Wiederholung", file=sys.stderr)
                           sys.exit(1)
                       if PAUSEN and zeit_fuer_neuen_versuch(PAUSEN[0]):
@@ -1238,7 +1232,8 @@ jobs:
                           time.sleep(p)
                           continue
                       # A reviewer that could not run must fail loudly, not pass as clean.
-                      print(f"Model call failed: HTTP {e.code}: {_leib[:300]!r}", file=sys.stderr)
+                      print(f"Model call failed: HTTP {e.code} (service_tier={SERVICE_TIER or 'NONE'}; "
+                            f"PULLFROG_SERVICE_TIER=off omits it): {_leib[:300]!r}", file=sys.stderr)
                       sys.exit(1)
                   # ConnectionError GEHOERT HIER DAZU (25.08.2026). Ein Abriss der
                   # Verbindung hebt `http.client.RemoteDisconnected`, und dessen
@@ -1267,7 +1262,10 @@ jobs:
 
               text = out["choices"][0]["message"]["content"] or ""
               usage = out.get("usage", {})
-              print(f"model={out.get('model')} tokens: {usage}")
+              _tier = out.get("service_tier")
+              OBSERVED_TIERS.append(_tier if _tier in KNOWN_TIERS else "UNVERIFIED")
+              print(f"model={out.get('model')} tokens: {usage} tier requested="
+                    f"{SERVICE_TIER or 'NONE'} observed={OBSERVED_TIERS[-1]}")
 
               if expected_batches is not None or expected_paths is not None:
                   if expected_batches is None or expected_paths is None:
@@ -1450,7 +1448,9 @@ jobs:
           incomplete = parse_kaputt or bool(dropped) or reconciliation_failed
           marker = (incomplete_review_marker(head) if incomplete
                     else complete_review_marker(head))
-          lines += ["", f"_{MODEL} · api.airforce_", severity_marker(findings), marker]
+          lines += ["", f"_{MODEL} · api.airforce · tier requested {SERVICE_TIER or 'NONE'}, "
+                        f"observed {', '.join(sorted(set(OBSERVED_TIERS))) or 'UNVERIFIED'}_",
+                    severity_marker(findings), marker]
           body = "\n".join(lines)
 
           comments = [{"path": f["path"], "line": int(f["line"]), "side": "RIGHT",

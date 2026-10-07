@@ -53,6 +53,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: python ../.github/tests/test_review_gates.py
+      - run: python ../.github/tests/test_review_service_tier.py
       - run: pytest
 
   go:
