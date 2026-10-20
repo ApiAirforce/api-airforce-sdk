@@ -76,7 +76,7 @@ jobs:
 
           BASE = (os.environ.get("BASE") or "").rstrip("/")
           KEY = os.environ.get("KEY") or ""
-          MODEL = os.environ.get("MODEL") or "gpt-5.6"
+          MODEL = os.environ.get("MODEL") or "gpt-6-sol"
           REPO = os.environ["REPO"]
           PR = os.environ.get("PR_NUM") or ""
           # HOW MUCH DIFF FITS IN ONE PASS - DERIVED, NOT DECLARED.
@@ -1137,7 +1137,7 @@ jobs:
                          "messages": [{"role": "system", "content": system_text},
                                       {"role": "user", "content": user_text}],
                          "max_completion_tokens": MAX_OUT,
-                         "reasoning_effort": "max"}
+                         "reasoning_effort": "xhigh"}
               out = None
               while out is None:
                   try:
@@ -1171,7 +1171,7 @@ jobs:
                                     "weiter mit reasoning_effort=high",
                                     file=sys.stderr)
                               continue
-                          if payload.pop("reasoning_effort", None) is not None:
+                          if payload.get("reasoning_effort") != "xhigh" and payload.pop("reasoning_effort", None) is not None:
                               wechsel_passt_noch('ohne reasoning_effort')
                               print("relay meldete invalid_request (HTTP 200) - "
                                     "weiter ohne reasoning_effort",
@@ -1226,7 +1226,7 @@ jobs:
                               print("relay kennt reasoning_effort=max nicht - weiter mit high",
                                     file=sys.stderr)
                               continue
-                          if payload.pop("reasoning_effort", None) is not None:
+                          if payload.get("reasoning_effort") != "xhigh" and payload.pop("reasoning_effort", None) is not None:
                               wechsel_passt_noch('ohne reasoning_effort')
                               print("relay kennt reasoning_effort nicht - weiter ohne das feld",
                                     file=sys.stderr)
