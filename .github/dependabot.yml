@@ -4,11 +4,10 @@
 version: 2
 updates:
   - package-ecosystem: "npm"
-    # NACH `dev`, NICHT NACH `main` (25.08.2026). Ohne diese Zeile oeffnet
-    # Dependabot gegen den Vorgabe-Zweig - der Bump laege dann auf `main`, ohne
-    # je auf `dev` gewesen zu sein: nie durch das Tor, nie auf `test`, nie
-    # funktional abgenommen. Und das ausgerechnet bei Aenderungen, die niemand
-    # von Hand gelesen hat.
+    # Target `dev`, NOT `main`. Without this line Dependabot opens against the
+    # default branch, and the bump would land on `main` without ever being on
+    # `dev`: never through the gate, never on `test`, never functionally
+    # accepted - for exactly the changes nobody has read by hand.
     target-branch: "dev"
     directory: "/typescript"
     schedule: { interval: "weekly" }
@@ -20,11 +19,10 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "pub"
-    # NACH `dev`, NICHT NACH `main` (25.08.2026). Ohne diese Zeile oeffnet
-    # Dependabot gegen den Vorgabe-Zweig - der Bump laege dann auf `main`, ohne
-    # je auf `dev` gewesen zu sein: nie durch das Tor, nie auf `test`, nie
-    # funktional abgenommen. Und das ausgerechnet bei Aenderungen, die niemand
-    # von Hand gelesen hat.
+    # Target `dev`, NOT `main`. Without this line Dependabot opens against the
+    # default branch, and the bump would land on `main` without ever being on
+    # `dev`: never through the gate, never on `test`, never functionally
+    # accepted - for exactly the changes nobody has read by hand.
     target-branch: "dev"
     directory: "/dart"
     schedule: { interval: "weekly" }
@@ -36,11 +34,10 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "gomod"
-    # NACH `dev`, NICHT NACH `main` (25.08.2026). Ohne diese Zeile oeffnet
-    # Dependabot gegen den Vorgabe-Zweig - der Bump laege dann auf `main`, ohne
-    # je auf `dev` gewesen zu sein: nie durch das Tor, nie auf `test`, nie
-    # funktional abgenommen. Und das ausgerechnet bei Aenderungen, die niemand
-    # von Hand gelesen hat.
+    # Target `dev`, NOT `main`. Without this line Dependabot opens against the
+    # default branch, and the bump would land on `main` without ever being on
+    # `dev`: never through the gate, never on `test`, never functionally
+    # accepted - for exactly the changes nobody has read by hand.
     target-branch: "dev"
     directory: "/go"
     schedule: { interval: "weekly" }
@@ -52,11 +49,10 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "maven"
-    # NACH `dev`, NICHT NACH `main` (25.08.2026). Ohne diese Zeile oeffnet
-    # Dependabot gegen den Vorgabe-Zweig - der Bump laege dann auf `main`, ohne
-    # je auf `dev` gewesen zu sein: nie durch das Tor, nie auf `test`, nie
-    # funktional abgenommen. Und das ausgerechnet bei Aenderungen, die niemand
-    # von Hand gelesen hat.
+    # Target `dev`, NOT `main`. Without this line Dependabot opens against the
+    # default branch, and the bump would land on `main` without ever being on
+    # `dev`: never through the gate, never on `test`, never functionally
+    # accepted - for exactly the changes nobody has read by hand.
     target-branch: "dev"
     directory: "/java"
     schedule: { interval: "weekly" }
@@ -68,11 +64,10 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "composer"
-    # NACH `dev`, NICHT NACH `main` (25.08.2026). Ohne diese Zeile oeffnet
-    # Dependabot gegen den Vorgabe-Zweig - der Bump laege dann auf `main`, ohne
-    # je auf `dev` gewesen zu sein: nie durch das Tor, nie auf `test`, nie
-    # funktional abgenommen. Und das ausgerechnet bei Aenderungen, die niemand
-    # von Hand gelesen hat.
+    # Target `dev`, NOT `main`. Without this line Dependabot opens against the
+    # default branch, and the bump would land on `main` without ever being on
+    # `dev`: never through the gate, never on `test`, never functionally
+    # accepted - for exactly the changes nobody has read by hand.
     target-branch: "dev"
     directory: "/php"
     schedule: { interval: "weekly" }
@@ -84,11 +79,10 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "pip"
-    # NACH `dev`, NICHT NACH `main` (25.08.2026). Ohne diese Zeile oeffnet
-    # Dependabot gegen den Vorgabe-Zweig - der Bump laege dann auf `main`, ohne
-    # je auf `dev` gewesen zu sein: nie durch das Tor, nie auf `test`, nie
-    # funktional abgenommen. Und das ausgerechnet bei Aenderungen, die niemand
-    # von Hand gelesen hat.
+    # Target `dev`, NOT `main`. Without this line Dependabot opens against the
+    # default branch, and the bump would land on `main` without ever being on
+    # `dev`: never through the gate, never on `test`, never functionally
+    # accepted - for exactly the changes nobody has read by hand.
     target-branch: "dev"
     directory: "/python"
     schedule: { interval: "weekly" }
@@ -100,11 +94,10 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: "cargo"
-    # NACH `dev`, NICHT NACH `main` (25.08.2026). Ohne diese Zeile oeffnet
-    # Dependabot gegen den Vorgabe-Zweig - der Bump laege dann auf `main`, ohne
-    # je auf `dev` gewesen zu sein: nie durch das Tor, nie auf `test`, nie
-    # funktional abgenommen. Und das ausgerechnet bei Aenderungen, die niemand
-    # von Hand gelesen hat.
+    # Target `dev`, NOT `main`. Without this line Dependabot opens against the
+    # default branch, and the bump would land on `main` without ever being on
+    # `dev`: never through the gate, never on `test`, never functionally
+    # accepted - for exactly the changes nobody has read by hand.
     target-branch: "dev"
     directory: "/rust"
     schedule: { interval: "weekly" }
