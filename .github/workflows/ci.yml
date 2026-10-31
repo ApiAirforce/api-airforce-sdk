@@ -37,6 +37,9 @@ jobs:
           cache: npm
           cache-dependency-path: typescript/package-lock.json
       - run: npm install
+      # Fail on a known high or critical advisory in a runtime dependency; dev-only tooling is not shipped.
+      - name: Dependency audit (runtime dependencies)
+        run: npm audit --omit=dev --audit-level=high
       - run: npm test
       - run: npm run build
 
