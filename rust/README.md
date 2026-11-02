@@ -138,13 +138,6 @@ let video = client.video()
     .generate_and_wait(json!({ "model": "minimax-hailuo-02", "prompt": "a paper plane over a city" }),
         Duration::from_millis(2500), Duration::from_secs(600)).await?;
 println!("{}", video["result_url"]);
-
-// 3D (async — poll, then download the glb/ply artifact)
-let task = client.three_d()
-    .generate_and_wait(json!({ "model": "shape-1", "prompt": "a toy biplane" }),
-        Duration::from_millis(2500), Duration::from_secs(600)).await?;
-let bytes = client.three_d().content(task["task_id"].as_str().unwrap()).await?;
-std::fs::write("model.glb", bytes)?;
 ```
 
 ## Account, keys & billing

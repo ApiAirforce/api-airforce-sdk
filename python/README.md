@@ -144,15 +144,6 @@ with open("clip.mp3", "rb") as f:
 # Video (async task — poll until done)
 video = client.video.generate_and_wait(model="minimax-hailuo-02", prompt="a paper plane over a city")
 print(video["result_url"])
-
-# 3D generation (async task — poll, then download the artifact)
-task = client.three_d.generate_and_wait(
-    model="shape-1",
-    image_urls=["https://example.com/toy.png"],  # image-to-3D models need >= 1
-    resolution="high",
-)
-blob = client.three_d.content(task["task_id"])   # glb/ply bytes (24h TTL)
-open(f"model.{task.get('format', 'glb')}", "wb").write(blob)
 ```
 
 ## Account, keys & billing

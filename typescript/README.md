@@ -5,7 +5,7 @@ AI gateway — one OpenAI-compatible API in front of many model providers.
 
 - OpenAI **and** Anthropic **and** Gemini compatible inference, plus embeddings
 - Streaming via async iterators
-- Image, audio (TTS / music / SFX / transcription / dubbing), video and 3D generation
+- Image, audio (TTS / music / SFX / transcription / dubbing) and video generation
 - Account, organizations, notifications, billing, API-key provisioning, 2FA and
   OAuth surfaces
 - Typed, dependency-free (native `fetch`), ESM + CJS, Node 18+ / browsers / edge
@@ -160,14 +160,6 @@ const video = await airforce.video.generateAndWait({
   prompt: "a paper plane gliding over a city",
 });
 console.log(video.result_url);
-
-// 3D (async task; artifact downloadable once has_result is true)
-const task = await airforce.threed.generateAndWait({
-  model: "shape-1",
-  image_urls: ["https://example.com/toy.png"],
-  resolution: "high",
-});
-const glb = await airforce.threed.downloadContent(task.task_id); // ArrayBuffer
 ```
 
 ## Models
