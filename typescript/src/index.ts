@@ -35,6 +35,7 @@ export * from "./resources/messages";
 export * from "./resources/responses";
 export * from "./resources/gemini";
 export * from "./resources/embeddings";
+export * from "./resources/rerank";
 export * from "./resources/models";
 export * from "./resources/images";
 export * from "./resources/audio";

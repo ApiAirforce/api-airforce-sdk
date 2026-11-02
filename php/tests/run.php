@@ -152,6 +152,19 @@ eq($res['usage']['prompt_tokens'], 2, 'embeddings usage');
 eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/embeddings', 'embeddings path');
 eq($mock->requests[0]['headers']['authorization'] ?? null, 'Bearer sk-air-test', 'embeddings auth header');
 
+// 8b. rerank sends api-key auth, forwards the body and returns the provider results
+$mock = new MockSender(static fn () => jsonResp(200, '{"results":[{"index":1,"relevance_score":0.97},'
+    . '{"index":0,"relevance_score":0.08}],"usage":{"total_tokens":64}}'));
+$client = new Client(apiKey: 'sk-air-test', baseUrl: 'https://api.airforce', sender: $mock);
+$res = $client->rerank->create(['model' => 'rerank-1', 'query' => 'rotate a key', 'documents' => ['a', 'b'], 'top_n' => 1]);
+eq($res['results'][0]['index'], 1, 'rerank first result');
+eq($res['usage']['total_tokens'], 64, 'rerank usage');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/rerank', 'rerank path');
+eq($mock->requests[0]['headers']['authorization'] ?? null, 'Bearer sk-air-test', 'rerank auth header');
+$sent = json_decode((string) $mock->requests[0]['body'], true);
+eq($sent['query'] ?? null, 'rotate a key', 'rerank query forwarded');
+eq($sent['documents'] ?? null, ['a', 'b'], 'rerank documents forwarded');
+
 // 9. org members list uses the session token and unwraps `members`
 $mock = new MockSender(static fn () => jsonResp(200, '{"members":[{"user_id":"u1","role":"owner","status":"active","joined_at":0}]}'));
 $client = new Client(sessionToken: 'jwt-test', baseUrl: 'https://api.airforce', sender: $mock);

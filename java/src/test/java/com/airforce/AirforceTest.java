@@ -170,6 +170,31 @@ class AirforceTest {
   }
 
   @Test
+  void rerankCreate() throws IOException {
+    AtomicReference<String> auth = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> body = new AtomicReference<>();
+    Airforce client = start(ex -> {
+      auth.set(ex.getRequestHeaders().getFirst("authorization"));
+      path.set(ex.getRequestURI().getPath());
+      body.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+      json(ex, 200,
+          "{\"results\":[{\"index\":1,\"relevance_score\":0.97},{\"index\":0,\"relevance_score\":0.08}],"
+              + "\"usage\":{\"total_tokens\":64}}");
+    });
+
+    JsonNode res = client.rerank().create(Map.of(
+        "model", "rerank-1", "query", "rotate a key", "documents", List.of("a", "b"), "top_n", 1));
+
+    assertEquals("/v1/rerank", path.get());
+    assertEquals("Bearer sk-air-test", auth.get());
+    assertTrue(body.get().contains("\"query\":\"rotate a key\""));
+    assertTrue(body.get().contains("\"documents\":[\"a\",\"b\"]"));
+    assertEquals(1, res.get("results").get(0).get("index").asInt());
+    assertEquals(64, res.get("usage").get("total_tokens").asInt());
+  }
+
+  @Test
   void orgMembersList() throws IOException {
     AtomicReference<String> auth = new AtomicReference<>();
     AtomicReference<String> path = new AtomicReference<>();

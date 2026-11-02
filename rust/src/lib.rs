@@ -25,6 +25,6 @@ pub use client::{Client, ClientBuilder};
 pub use error::{ApiError, Error, Result};
 pub use resources::{
     create_pkce_pair, Account, Audio, Auth, AuthorizeParams, Billing, Chat, Embeddings, Gemini,
-    Images, Keys, Messages, Models, Notifications, OAuth, Org, PkcePair, Responses, ThreeD,
+    Images, Keys, Messages, Models, Notifications, OAuth, Org, PkcePair, Rerank, Responses, ThreeD,
     TwoFactor, Video, Voices,
 };

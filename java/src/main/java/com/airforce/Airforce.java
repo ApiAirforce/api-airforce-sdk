@@ -24,6 +24,7 @@ public final class Airforce {
   private final ResponsesResource responses;
   private final GeminiResource gemini;
   private final EmbeddingsResource embeddings;
+  private final RerankResource rerank;
   private final ModelsResource models;
   private final ImagesResource images;
   private final AudioResource audio;
@@ -60,6 +61,7 @@ public final class Airforce {
     this.responses = new ResponsesResource(transport);
     this.gemini = new GeminiResource(transport);
     this.embeddings = new EmbeddingsResource(transport);
+    this.rerank = new RerankResource(transport);
     this.models = new ModelsResource(transport);
     this.images = new ImagesResource(transport);
     this.audio = new AudioResource(transport);
@@ -98,6 +100,11 @@ public final class Airforce {
 
   public EmbeddingsResource embeddings() {
     return embeddings;
+  }
+
+  /** Document reranking ({@code /v1/rerank}). */
+  public RerankResource rerank() {
+    return rerank;
   }
 
   public ModelsResource models() {

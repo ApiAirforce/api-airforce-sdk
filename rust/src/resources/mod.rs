@@ -11,7 +11,7 @@ mod org;
 pub use account::{Account, Billing, Keys};
 pub use auth::{create_pkce_pair, Auth, AuthorizeParams, OAuth, PkcePair, TwoFactor};
 pub use catalog::Models;
-pub use inference::{Chat, Embeddings, Gemini, Messages, Responses};
+pub use inference::{Chat, Embeddings, Gemini, Messages, Rerank, Responses};
 pub use media::{Audio, Images, ThreeD, Video, Voices};
 pub use notifications::Notifications;
 pub use org::Org;

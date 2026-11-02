@@ -20,6 +20,7 @@ public sealed class AirforceClient : IDisposable
     public ResponsesResource Responses { get; }
     public GeminiResource Gemini { get; }
     public EmbeddingsResource Embeddings { get; }
+    public RerankResource Rerank { get; }
     public ModelsResource Models { get; }
     public ImagesResource Images { get; }
     public AudioResource Audio { get; }
@@ -59,6 +60,7 @@ public sealed class AirforceClient : IDisposable
         Responses = new ResponsesResource(_transport);
         Gemini = new GeminiResource(_transport);
         Embeddings = new EmbeddingsResource(_transport);
+        Rerank = new RerankResource(_transport);
         Models = new ModelsResource(_transport);
         Images = new ImagesResource(_transport);
         Audio = new AudioResource(_transport);

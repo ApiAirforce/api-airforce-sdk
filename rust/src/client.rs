@@ -147,6 +147,9 @@ impl Client {
     pub fn embeddings(&self) -> Embeddings<'_> {
         Embeddings { client: self }
     }
+    pub fn rerank(&self) -> Rerank<'_> {
+        Rerank { client: self }
+    }
     pub fn models(&self) -> Models<'_> {
         Models { client: self }
     }

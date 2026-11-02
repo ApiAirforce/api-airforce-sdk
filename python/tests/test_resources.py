@@ -19,6 +19,42 @@ def client_with(handler, **kwargs) -> Airforce:
     return Airforce(http_client=httpx.Client(transport=httpx.MockTransport(handler)), **kwargs)
 
 
+RERANK_RESPONSE = {
+    "results": [{"index": 1, "relevance_score": 0.97}, {"index": 0, "relevance_score": 0.08}],
+    "usage": {"total_tokens": 64},
+}
+
+
+# --- Rerank --------------------------------------------------------------------
+
+def test_rerank_create_sends_body_and_returns_provider_body():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=RERANK_RESPONSE)
+
+    client = client_with(handler, api_key="sk-air-test")
+    res = client.rerank.create(model="rerank-1", query="rotate a key", documents=["a", {"text": "b"}], top_n=1)
+    assert seen["url"] == "https://api.airforce/v1/rerank"
+    assert seen["auth"] == "Bearer sk-air-test"
+    assert seen["body"] == {"model": "rerank-1", "query": "rotate a key", "documents": ["a", {"text": "b"}], "top_n": 1}
+    assert res["results"][0] == {"index": 1, "relevance_score": 0.97}
+
+
+async def test_async_rerank_create():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/rerank"
+        return httpx.Response(200, json=RERANK_RESPONSE)
+
+    client = AsyncAirforce(api_key="sk-air-test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    res = await client.rerank.create(model="rerank-1", query="q", documents=["a"])
+    assert res["usage"]["total_tokens"] == 64
+    await client.aclose()
+
+
 # --- Embeddings ----------------------------------------------------------------
 
 def test_embeddings_create_sends_body_and_parses_response():

@@ -116,6 +116,26 @@ void main() {
     expect(mock.requests.last.headers['authorization'], 'Bearer sk-air-test');
   });
 
+  test('rerank.create posts to /v1/rerank and returns the results', () async {
+    const body = '{"results":[{"index":1,"relevance_score":0.97},{"index":0,"relevance_score":0.08}],'
+        '"usage":{"total_tokens":64}}';
+    final mock = MockClient((req) => streamed(200, body));
+    final res = await client(mock).rerank.create({
+      'model': 'rerank-1',
+      'query': 'rotate a key',
+      'documents': ['a', 'b'],
+      'top_n': 1,
+    });
+    expect(res['results'][0]['index'], 1);
+    expect(res['usage']['total_tokens'], 64);
+    expect(mock.requests.last.url.path, '/v1/rerank');
+    expect(mock.requests.last.method, 'POST');
+    expect(mock.requests.last.headers['authorization'], 'Bearer sk-air-test');
+    final sent = jsonDecode((mock.requests.last as http.Request).body) as Map<String, dynamic>;
+    expect(sent['query'], 'rotate a key');
+    expect(sent['documents'], ['a', 'b']);
+  });
+
   test('org.members unwraps the members array and uses the session token', () async {
     const body = '{"members":[{"user_id":"u1","role":"owner","status":"active","joined_at":0}]}';
     final mock = MockClient((req) => streamed(200, body));

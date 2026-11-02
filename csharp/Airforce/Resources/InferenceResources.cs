@@ -89,6 +89,21 @@ public sealed class EmbeddingsResource : Resource
         => Transport.PostAsync("/v1/embeddings", "api_key", request, ct);
 }
 
+/// <summary>Document reranking — <c>POST /v1/rerank</c>.</summary>
+public sealed class RerankResource : Resource
+{
+    internal RerankResource(Transport t) : base(t) { }
+
+    /// <summary>Score documents against a query. The request needs <c>model</c>,
+    /// <c>query</c> and <c>documents</c> (strings or objects with a <c>text</c> field, at most
+    /// 1,000); optional keys are <c>top_n</c>, <c>return_documents</c>,
+    /// <c>max_chunks_per_doc</c>, <c>overlap_tokens</c> and <c>user</c>. Billed on input tokens
+    /// only; no streaming. The response is the model provider's body as received, typically
+    /// <c>{results:[{index, relevance_score, document?}], usage}</c>.</summary>
+    public Task<JsonNode?> CreateAsync(object request, CancellationToken ct = default)
+        => Transport.PostAsync("/v1/rerank", "api_key", request, ct);
+}
+
 /// <summary>Google Gemini-compatible generation — <c>POST /v1beta/models/{model}:{method}</c>.</summary>
 public sealed class GeminiResource : Resource
 {

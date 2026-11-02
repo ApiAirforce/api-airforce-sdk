@@ -39,6 +39,7 @@ type Client struct {
 	Responses     *ResponsesService
 	Gemini        *GeminiService
 	Embeddings    *EmbeddingsService
+	Rerank        *RerankService
 	Models        *ModelsService
 	Images        *ImagesService
 	Audio         *AudioService
@@ -106,6 +107,7 @@ func New(opts ...Option) *Client {
 	c.Responses = &ResponsesService{c}
 	c.Gemini = &GeminiService{c}
 	c.Embeddings = &EmbeddingsService{c}
+	c.Rerank = &RerankService{c}
 	c.Models = &ModelsService{c}
 	c.Images = &ImagesService{c}
 	c.Audio = &AudioService{c}

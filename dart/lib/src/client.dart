@@ -25,6 +25,7 @@ class AirforceClient {
   late final Messages messages;
   late final Responses responses;
   late final Embeddings embeddings;
+  late final Rerank rerank;
   late final Gemini gemini;
   late final Models models;
   late final Images images;
@@ -46,6 +47,7 @@ class AirforceClient {
     messages = Messages(_t);
     responses = Responses(_t);
     embeddings = Embeddings(_t);
+    rerank = Rerank(_t);
     gemini = Gemini(_t);
     models = Models(_t);
     images = Images(_t);

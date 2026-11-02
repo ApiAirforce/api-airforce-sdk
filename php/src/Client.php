@@ -18,6 +18,7 @@ use Airforce\Resources\Models;
 use Airforce\Resources\Notifications;
 use Airforce\Resources\OAuth;
 use Airforce\Resources\Org;
+use Airforce\Resources\Rerank;
 use Airforce\Resources\Responses;
 use Airforce\Resources\ThreeD;
 use Airforce\Resources\TwoFactor;
@@ -43,6 +44,7 @@ final class Client
     public readonly Messages $messages;
     public readonly Responses $responses;
     public readonly Embeddings $embeddings;
+    public readonly Rerank $rerank;
     public readonly Gemini $gemini;
     public readonly Models $models;
     public readonly Images $images;
@@ -86,6 +88,7 @@ final class Client
         $this->messages = new Messages($this->transport);
         $this->responses = new Responses($this->transport);
         $this->embeddings = new Embeddings($this->transport);
+        $this->rerank = new Rerank($this->transport);
         $this->gemini = new Gemini($this->transport);
         $this->models = new Models($this->transport);
         $this->images = new Images($this->transport);
