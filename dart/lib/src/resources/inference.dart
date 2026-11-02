@@ -66,6 +66,22 @@ class Embeddings {
       _t.post('/v1/embeddings', 'api_key', request);
 }
 
+/// Rerank — `POST /v1/rerank`.
+///
+/// Scores documents against a query and returns them ordered by relevance.
+/// Billed on input tokens only; no streaming.
+class Rerank {
+  final Transport _t;
+  Rerank(this._t);
+
+  /// `{model, query, documents: (string | {text, ...})[] (at most 1,000), top_n?,
+  /// return_documents?, max_chunks_per_doc?, overlap_tokens?, user?}` → the model
+  /// provider's body as received, typically
+  /// `{results: [{index, relevance_score, document?}], usage}`.
+  Future<dynamic> create(Map<String, dynamic> request) =>
+      _t.post('/v1/rerank', 'api_key', request);
+}
+
 /// Google Gemini-compatible generation — `POST /v1beta/models/{model}:{method}`.
 class Gemini {
   final Transport _t;
