@@ -29,7 +29,7 @@ existing client at it — but these SDKs add the gateway-specific power on top:
   iterators in every language.
 - 🧮 **Embeddings** — OpenAI-compatible `/v1/embeddings` with the same smart routing and
   fallback, billed on input tokens only.
-- 🎨 **Media** — image, audio (TTS / music / SFX / transcription / dubbing), video, 3D
+- 🎨 **Media** — image, audio (TTS / music / SFX / transcription / dubbing), video
   generation and voice cloning.
 - 🔔 **Notifications** — preferences, the in-app feed, and delivery-channel linking.
 - 🏢 **Organizations** — team self-service: members, roles, invites, org-scoped API keys
@@ -51,7 +51,7 @@ existing client at it — but these SDKs add the gateway-specific power on top:
 | **PHP** | [`php/`](php/) | `api-airforce/sdk` (Composer) | PHP 8.1+ · cURL |
 
 > **Status:** all eight implement the shared [API contract](docs/API_SURFACE.md) — including
-> embeddings, 3D generation, notifications and organizations — and ship a passing offline
+> embeddings, notifications and organizations — and ship a passing offline
 > test suite, run in [CI](.github/workflows/ci.yml) on every push. Not yet published to the
 > package registries — see [Installation](#installation).
 

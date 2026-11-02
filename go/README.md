@@ -129,17 +129,9 @@ os.WriteFile("out.mp3", audio, 0o644)
 video, _ := client.Video.GenerateAndWait(ctx,
     airforce.VideoParams{Model: "minimax-hailuo-02", Prompt: "a paper plane over a city"}, 0, 0)
 fmt.Println(video.ResultURL)
-
-// 3D (async — poll until done, then download the glb/ply artifact)
-task, _ := client.ThreeD.GenerateAndWait(ctx, airforce.ThreeDParams{
-    Model:     "some-image-to-3d-model",
-    ImageURLs: []string{"https://example.com/toy.png"},
-}, 0, 0)
-modelBytes, _ := client.ThreeD.Content(ctx, task.TaskID)
-os.WriteFile("model."+task.Format, modelBytes, 0o644)
 ```
 
-Video and 3D tasks are billed only when a worker picks them up; failures are
+Video tasks are billed only when a worker picks them up; failures are
 refunded, and tasks plus their artifacts expire after 24 hours.
 
 ## Account, keys & billing

@@ -105,18 +105,7 @@ file_put_contents('out.mp3', $audio);
 // Video (async — poll until done)
 $video = $client->video->generateAndWait(['model' => 'minimax-hailuo-02', 'prompt' => 'a paper plane over a city']);
 echo $video['result_url'];
-
-// 3D (async — poll until done, then download the artifact)
-$task = $client->threeD->generateAndWait([
-    'model' => '3d-1',
-    'image_urls' => ['https://example.com/chair.jpg'],
-    'resolution' => 'medium',
-]);
-file_put_contents('model.glb', $client->threeD->content($task['task_id']));
 ```
-
-3D tasks and their artifacts expire after 24 h; credits are only deducted once a worker
-picks the task up, and failures are refunded.
 
 ## Account, keys & billing
 
