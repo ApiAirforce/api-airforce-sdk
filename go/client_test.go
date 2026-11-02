@@ -194,6 +194,44 @@ func TestEmbeddingsCreate(t *testing.T) {
 	}
 }
 
+func TestRerankCreate(t *testing.T) {
+	var gotAuth, gotPath string
+	var gotBody map[string]any
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("authorization")
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"results":[{"index":1,"relevance_score":0.97},{"index":0,"relevance_score":0.08}],` +
+			`"usage":{"total_tokens":64}}`))
+	}, WithAPIKey("sk-air-test"))
+
+	res, err := client.Rerank.Create(context.Background(), RerankParams{
+		Model:     "rerank-1",
+		Query:     "rotate a key",
+		Documents: []any{"a", map[string]any{"text": "b"}},
+		TopN:      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/rerank" || gotAuth != "Bearer sk-air-test" {
+		t.Fatalf("path=%q auth=%q", gotPath, gotAuth)
+	}
+	if gotBody["query"] != "rotate a key" || gotBody["top_n"] != float64(1) {
+		t.Fatalf("body = %v", gotBody)
+	}
+	if _, ok := gotBody["return_documents"]; ok {
+		t.Fatalf("unset return_documents was sent: %v", gotBody)
+	}
+	if len(res.Results) != 2 || res.Results[0].Index != 1 || res.Results[0].RelevanceScore != 0.97 {
+		t.Fatalf("results = %+v", res.Results)
+	}
+	if res.Usage["total_tokens"] != float64(64) {
+		t.Fatalf("usage = %v", res.Usage)
+	}
+}
+
 func TestOrgMembers(t *testing.T) {
 	var gotAuth, gotPath string
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
