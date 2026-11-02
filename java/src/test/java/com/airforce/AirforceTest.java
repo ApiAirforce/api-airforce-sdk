@@ -170,6 +170,32 @@ class AirforceTest {
   }
 
   @Test
+  void imagesEditSendsMultipart() throws IOException {
+    AtomicReference<String> path = new AtomicReference<>();
+    AtomicReference<String> ctype = new AtomicReference<>();
+    AtomicReference<String> body = new AtomicReference<>();
+    Airforce client = start(ex -> {
+      path.set(ex.getRequestURI().getPath());
+      ctype.set(ex.getRequestHeaders().getFirst("content-type"));
+      body.set(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+      json(ex, 200, "{\"created\":1,\"data\":[{\"url\":\"https://example.com/o.png\"}]}");
+    });
+
+    JsonNode res = client.images().edit(
+        Map.of("model", "img-1", "prompt", "add a hat"),
+        List.of(Map.entry("a.png", new byte[] {1}), Map.entry("b.png", new byte[] {2})),
+        Map.entry("m.png", new byte[] {3}));
+
+    assertEquals("/v1/images/edits", path.get());
+    assertTrue(ctype.get().startsWith("multipart/form-data"));
+    assertEquals(2, body.get().split("name=\"image\"", -1).length - 1);
+    assertTrue(body.get().contains("filename=\"a.png\""));
+    assertTrue(body.get().contains("name=\"mask\"; filename=\"m.png\""));
+    assertTrue(body.get().contains("add a hat"));
+    assertEquals("https://example.com/o.png", res.get("data").get(0).get("url").asText());
+  }
+
+  @Test
   void modelsRetrieveKeepsSlashes() throws IOException {
     AtomicReference<String> auth = new AtomicReference<>();
     AtomicReference<String> path = new AtomicReference<>();
