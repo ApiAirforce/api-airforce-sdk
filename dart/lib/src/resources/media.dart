@@ -3,13 +3,28 @@ import '../transport.dart';
 
 String _enc(String s) => Uri.encodeComponent(s);
 
-/// Image generation — `POST /v1/images/generations`.
+/// Image generation — `POST /v1/images/generations` — and edits — `POST /v1/images/edits`.
 class Images {
   final Transport _t;
   Images(this._t);
 
   Future<dynamic> generate(Map<String, dynamic> request) =>
       _t.post('/v1/images/generations', 'api_key', request);
+
+  /// Edit or vary input image(s) (multipart). [images] needs at least one and at
+  /// most 16 entries, 25 MB each; each becomes one `image` part. [extra] carries
+  /// optional form fields (n, size, aspect_ratio, quality, response_format).
+  /// Same models, prices and response shape as [generate].
+  Future<dynamic> edit(String model, String prompt, List<({String filename, List<int> data})> images,
+      {({String filename, List<int> data})? mask, Map<String, String>? extra}) {
+    final fields = {'model': model, 'prompt': prompt, ...?extra};
+    final files = [
+      for (final i in images) (field: 'image', filename: i.filename, data: i.data),
+      if (mask != null) (field: 'mask', filename: mask.filename, data: mask.data),
+    ];
+    final m = buildMultipart(fields, files);
+    return _t.multipartJson('/v1/images/edits', m.body, m.contentType);
+  }
 }
 
 /// Audio — TTS, music, SFX, transcription, dubbing, voices (`/v1/audio/*`).

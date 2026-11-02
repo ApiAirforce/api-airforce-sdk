@@ -93,6 +93,29 @@ vectors = [d["embedding"] for d in res["data"]]
 `input` accepts a string, a list of strings, or (arrays of) token ids. Billed on input
 tokens only.
 
+
+## Rerank, model lookup and image edits
+
+```python
+res = client.rerank.create(
+    model="BAAI/bge-reranker-v2-m3",
+    query="How do I rotate an API key?",
+    documents=["Billing is pay-as-you-go.", "Create a new key, switch to it, delete the old one."],
+    top_n=1,
+)
+best = res["results"][0]["index"]
+
+model = client.models.retrieve("BAAI/bge-reranker-v2-m3")  # one listing entry
+
+with open("photo.png", "rb") as f:
+    edited = client.images.edit(model="gpt-image-1", prompt="add a red hat", images=[(f.read(), "photo.png")])
+```
+
+Rerank scores documents against a query (billed on input tokens; `index` points into
+`documents`). Model lookup returns one entry of the model list; ids with slashes work as
+written. Image edits upload up to 16 input images (25 MB each) to a model whose
+`image_caps.max_input_images` is above 0.
+
 ## Fallback models
 
 ```python

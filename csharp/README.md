@@ -89,6 +89,30 @@ var emb = await client.Embeddings.CreateAsync(new
 var vector = emb!["data"]![0]!["embedding"]; // billed on input tokens only
 ```
 
+
+## Rerank, model lookup and image edits
+
+```csharp
+var res = await client.Rerank.CreateAsync(new
+{
+    model = "BAAI/bge-reranker-v2-m3",
+    query = "How do I rotate an API key?",
+    documents = new[] { "Billing is pay-as-you-go.", "Create a new key, switch to it, delete the old one." },
+    top_n = 1,
+});
+var best = res!["results"]![0]!["index"]!.GetValue<int>();
+
+var model = await client.Models.RetrieveAsync("BAAI/bge-reranker-v2-m3"); // one listing entry
+
+var edited = await client.Images.EditAsync("gpt-image-1", "add a red hat",
+    new[] { ("photo.png", await File.ReadAllBytesAsync("photo.png")) });
+```
+
+Rerank scores documents against a query (billed on input tokens; `index` points into
+`documents`). Model lookup returns one entry of the model list; ids with slashes work as
+written. Image edits upload up to 16 input images (25 MB each) to a model whose
+`image_caps.max_input_images` is above 0.
+
 ## Media
 
 ```csharp

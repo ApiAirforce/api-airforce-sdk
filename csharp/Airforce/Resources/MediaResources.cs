@@ -10,6 +10,25 @@ public sealed class ImagesResource : Resource
 
     public Task<JsonNode?> GenerateAsync(object request, CancellationToken ct = default)
         => Transport.PostAsync("/v1/images/generations", "api_key", request, ct);
+
+    /// <summary>Edit or vary input image(s) — multipart <c>POST /v1/images/edits</c>.
+    /// <paramref name="images"/> holds (file name, bytes) pairs: at least one, at most 16, 25 MB
+    /// each; each becomes one <c>image</c> part. <paramref name="extra"/> carries optional form
+    /// fields (n, size, aspect_ratio, quality, response_format). Same models, prices and response
+    /// shape as <see cref="GenerateAsync"/>.</summary>
+    public Task<JsonNode?> EditAsync(string model, string prompt,
+        IEnumerable<(string Name, byte[] Data)> images, (string Name, byte[] Data)? mask = null,
+        IDictionary<string, string>? extra = null, CancellationToken ct = default)
+    {
+        var fields = new Dictionary<string, string> { ["model"] = model, ["prompt"] = prompt };
+        if (extra != null)
+            foreach (var kv in extra) fields[kv.Key] = kv.Value;
+        var files = images.Select(i => ("image", i.Name, i.Data)).ToList();
+        if (mask is { } m) files.Add(("mask", m.Name, m.Data));
+        var (body, contentType) = Multipart.Build(fields, files);
+        return Transport.RequestJsonAsync(HttpMethod.Post, "/v1/images/edits",
+            new RequestOptions { Auth = "api_key", Body = body, ContentType = contentType }, ct);
+    }
 }
 
 /// <summary>Audio — TTS, music, SFX, transcription, dubbing, voices (<c>/v1/audio/*</c>).</summary>

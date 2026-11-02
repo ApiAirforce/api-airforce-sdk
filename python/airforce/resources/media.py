@@ -24,6 +24,16 @@ def _form(fields: Dict[str, Any]) -> Dict[str, str]:
 
 # --- Images ------------------------------------------------------------------
 
+def _edit_files(
+    images: Sequence[Tuple[FileContent, str]], mask: Optional[Tuple[FileContent, str]]
+) -> List[Tuple[str, Tuple[str, FileContent]]]:
+    """One ``image`` part per input image (the API takes up to 16), plus ``mask``."""
+    files = [("image", (name, content)) for content, name in images]
+    if mask is not None:
+        files.append(("mask", (mask[1], mask[0])))
+    return files
+
+
 class Images(SyncAPIResource):
     def generate(self, *, model: str, prompt: str, **params: Any) -> Any:
         """Generate image(s). Optional: n, size, quality, response_format,
@@ -32,11 +42,45 @@ class Images(SyncAPIResource):
             "POST", "/v1/images/generations", json={"model": model, "prompt": prompt, **clean(**params)}
         )
 
+    def edit(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        images: Sequence[Tuple[FileContent, str]],
+        mask: Optional[Tuple[FileContent, str]] = None,
+        **params: Any,
+    ) -> Any:
+        """Edit or vary input image(s) (multipart ``POST /v1/images/edits``).
+
+        ``images`` is a list of ``(content, filename)`` pairs: at least one, at most 16,
+        25 MB each. Optional: mask, n, size, aspect_ratio, quality, response_format.
+        Same models, prices and response shape as :meth:`generate`.
+        """
+        return self._transport.request(
+            "POST", "/v1/images/edits",
+            data=_form({"model": model, "prompt": prompt, **params}), files=_edit_files(images, mask),
+        )
+
 
 class AsyncImages(AsyncAPIResource):
     async def generate(self, *, model: str, prompt: str, **params: Any) -> Any:
         return await self._transport.request(
             "POST", "/v1/images/generations", json={"model": model, "prompt": prompt, **clean(**params)}
+        )
+
+    async def edit(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        images: Sequence[Tuple[FileContent, str]],
+        mask: Optional[Tuple[FileContent, str]] = None,
+        **params: Any,
+    ) -> Any:
+        return await self._transport.request(
+            "POST", "/v1/images/edits",
+            data=_form({"model": model, "prompt": prompt, **params}), files=_edit_files(images, mask),
         )
 
 

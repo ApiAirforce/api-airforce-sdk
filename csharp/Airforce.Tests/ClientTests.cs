@@ -121,6 +121,26 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task ImagesEdit_SendsOneImagePartPerInputPlusMask()
+    {
+        var handler = new MockHandler(Json(HttpStatusCode.OK,
+            "{\"created\":1,\"data\":[{\"url\":\"https://example.com/o.png\"}]}"));
+        using var client = Client(handler);
+
+        var res = await client.Images.EditAsync("img-1", "add a hat",
+            new[] { ("a.png", new byte[] { 1 }), ("b.png", new byte[] { 2 }) },
+            ("m.png", new byte[] { 3 }));
+
+        Assert.Equal("https://example.com/o.png", res!["data"]![0]!["url"]!.GetValue<string>());
+        Assert.Equal("/v1/images/edits", handler.Last.RequestUri!.AbsolutePath);
+        var body = handler.LastBody!;
+        Assert.Equal(2, body.Split("name=\"image\"").Length - 1);
+        Assert.Contains("filename=\"a.png\"", body);
+        Assert.Contains("name=\"mask\"", body);
+        Assert.Contains("add a hat", body);
+    }
+
+    [Fact]
     public async Task ModelsRetrieve_KeepsSlashesAndSendsNoAuth()
     {
         var handler = new MockHandler(Json(HttpStatusCode.OK,

@@ -32,6 +32,32 @@ function json(status: number, body: unknown, headers?: Record<string, string>): 
   });
 }
 
+describe("images.edit", () => {
+  it("sends one image part per input plus the mask and fields", async () => {
+    const { fetch, calls } = makeFetch([json(200, { created: 1, data: [{ url: "https://example.com/o.png" }] })]);
+    const client = new Airforce({ apiKey: "sk-air-test", fetch });
+
+    const res = await client.images.edit({
+      model: "img-1",
+      prompt: "add a hat",
+      images: [
+        { value: new Uint8Array([1]), name: "a.png" },
+        { value: new Uint8Array([2]), name: "b.png" },
+      ],
+      mask: { value: new Uint8Array([3]), name: "m.png" },
+      n: 1,
+    });
+
+    expect(res.data[0]?.url).toBe("https://example.com/o.png");
+    expect(calls[0]?.url).toBe("https://api.airforce/v1/images/edits");
+    const form = calls[0]?.init.body as FormData;
+    expect(form.getAll("image")).toHaveLength(2);
+    expect((form.get("mask") as File).name).toBe("m.png");
+    expect(form.get("prompt")).toBe("add a hat");
+    expect(form.get("n")).toBe("1");
+  });
+});
+
 describe("models.retrieve", () => {
   it("keeps slashes in the id and sends no auth", async () => {
     const { fetch, calls } = makeFetch([

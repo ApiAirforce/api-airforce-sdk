@@ -25,6 +25,32 @@ RERANK_RESPONSE = {
 }
 
 
+# --- Image edits ---------------------------------------------------------------
+
+def test_images_edit_sends_one_part_per_image_plus_mask():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["ctype"] = request.headers.get("content-type", "")
+        seen["body"] = request.content
+        return httpx.Response(200, json={"created": 1, "data": [{"url": "https://example.com/out.png"}]})
+
+    client = client_with(handler, api_key="sk-air-test")
+    res = client.images.edit(
+        model="img-1", prompt="add a hat", images=[(b"PNG1", "a.png"), (b"PNG2", "b.png")], mask=(b"M", "m.png"), n=1
+    )
+    body = seen["body"]
+    assert seen["path"] == "/v1/images/edits"
+    assert seen["ctype"].startswith("multipart/form-data")
+    assert body.count(b'name="image"') == 2
+    assert b'filename="a.png"' in body and b'filename="b.png"' in body
+    assert b'name="mask"; filename="m.png"' in body
+    assert b'name="prompt"' in body and b"add a hat" in body
+    assert b'name="n"' in body
+    assert res["data"][0]["url"] == "https://example.com/out.png"
+
+
 # --- Models retrieve -----------------------------------------------------------
 
 def test_models_retrieve_keeps_slashes_and_returns_the_model():

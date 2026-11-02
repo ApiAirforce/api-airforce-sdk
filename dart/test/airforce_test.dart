@@ -116,6 +116,24 @@ void main() {
     expect(mock.requests.last.headers['authorization'], 'Bearer sk-air-test');
   });
 
+  test('images.edit sends one image part per input plus the mask', () async {
+    const body = '{"created":1,"data":[{"url":"https://example.com/o.png"}]}';
+    final mock = MockClient((req) => streamed(200, body));
+    final res = await client(mock).images.edit('img-1', 'add a hat', [
+      (filename: 'a.png', data: [1]),
+      (filename: 'b.png', data: [2]),
+    ], mask: (filename: 'm.png', data: [3]));
+    expect(res['data'][0]['url'], 'https://example.com/o.png');
+    final req = mock.requests.last as http.Request;
+    expect(req.url.path, '/v1/images/edits');
+    expect(req.headers['content-type'], startsWith('multipart/form-data'));
+    final sent = utf8.decode(req.bodyBytes, allowMalformed: true);
+    expect('name="image"'.allMatches(sent).length, 2);
+    expect(sent, contains('filename="a.png"'));
+    expect(sent, contains('name="mask"; filename="m.png"'));
+    expect(sent, contains('add a hat'));
+  });
+
   test('models.retrieve keeps slashes in the id and sends no auth', () async {
     const body = '{"id":"BAAI/bge-reranker-v2-m3","object":"model"}';
     final mock = MockClient((req) => streamed(200, body));
