@@ -32,6 +32,23 @@ function json(status: number, body: unknown, headers?: Record<string, string>): 
   });
 }
 
+describe("models.retrieve", () => {
+  it("keeps slashes in the id and sends no auth", async () => {
+    const { fetch, calls } = makeFetch([
+      json(200, { id: "BAAI/bge-reranker-v2-m3", object: "model", media_type: "rerank" }),
+    ]);
+    const client = new Airforce({ apiKey: "sk-air-test", fetch });
+
+    const model = await client.models.retrieve("BAAI/bge-reranker-v2-m3");
+
+    expect(model.id).toBe("BAAI/bge-reranker-v2-m3");
+    expect(calls[0]?.url).toBe("https://api.airforce/v1/models/BAAI/bge-reranker-v2-m3");
+    expect(calls[0]?.init.method).toBe("GET");
+    const headers = calls[0]?.init.headers as Headers;
+    expect(headers.get("authorization")).toBeNull();
+  });
+});
+
 describe("rerank", () => {
   const reranked: RerankResponse = {
     results: [
