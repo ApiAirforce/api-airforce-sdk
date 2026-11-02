@@ -23,6 +23,35 @@ impl Images<'_> {
             )
             .await
     }
+
+    /// Edit or vary input image(s) — multipart `POST /v1/images/edits`.
+    ///
+    /// `images` holds `(filename, bytes)` pairs: at least one, at most 16,
+    /// 25 MB each; each becomes one `image` part. `mask` is optional. `extra`
+    /// carries optional form fields (n, size, aspect_ratio, quality,
+    /// response_format). Same models, prices and response shape as `generate`.
+    pub async fn edit(
+        &self,
+        model: &str,
+        prompt: &str,
+        images: &[(&str, &[u8])],
+        mask: Option<(&str, &[u8])>,
+        extra: &[(&str, &str)],
+    ) -> Result<Value> {
+        let mut form = fields(model, extra);
+        form.push(("prompt", prompt.to_string()));
+        let mut files: Vec<(&str, &str, &[u8])> = images
+            .iter()
+            .map(|&(name, data)| ("image", name, data))
+            .collect();
+        if let Some((name, data)) = mask {
+            files.push(("mask", name, data));
+        }
+        let (body, ct) = build_multipart(&form, &files);
+        self.client
+            .multipart_json("/v1/images/edits", "api_key", body, &ct)
+            .await
+    }
 }
 
 /// Audio — TTS, music, SFX, transcription, dubbing, voices (`/v1/audio/*`).

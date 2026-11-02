@@ -136,6 +136,43 @@ async fn error_mapping_payment_required() {
 }
 
 #[tokio::test]
+async fn images_edit_sends_one_image_part_per_input_plus_mask() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/images/edits"))
+        .and(header("authorization", "Bearer sk-air-test"))
+        .respond_with(json_response(
+            200,
+            r#"{"created":1,"data":[{"url":"https://example.com/o.png"}]}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .api_key("sk-air-test")
+        .base_url(server.uri())
+        .build();
+    let res = client
+        .images()
+        .edit(
+            "img-1",
+            "add a hat",
+            &[("a.png", &[1u8][..]), ("b.png", &[2u8][..])],
+            Some(("m.png", &[3u8][..])),
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(res["data"][0]["url"], "https://example.com/o.png");
+    let requests = server.received_requests().await.unwrap();
+    let sent = String::from_utf8_lossy(&requests[0].body);
+    assert_eq!(sent.matches("name=\"image\"").count(), 2);
+    assert!(sent.contains("filename=\"a.png\""));
+    assert!(sent.contains("name=\"mask\"; filename=\"m.png\""));
+    assert!(sent.contains("add a hat"));
+}
+
+#[tokio::test]
 async fn models_retrieve_keeps_slashes_in_the_id() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
