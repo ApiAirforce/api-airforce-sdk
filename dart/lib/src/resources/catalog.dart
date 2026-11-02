@@ -11,6 +11,11 @@ class Models {
     return res is Map && res.containsKey('data') ? res['data'] : res;
   }
 
+  /// One model, the same entry [list] returns for it (`GET /v1/models/{model}`).
+  /// Ids with slashes such as `BAAI/bge-reranker-v2-m3` are sent as written, not
+  /// encoded. An unknown id throws the API's 404 error.
+  Future<dynamic> retrieve(String model) => _t.get('/v1/models/$model', 'none');
+
   Future<dynamic> detail(String model) =>
       _t.get('/api/models/${Uri.encodeComponent(model)}/detail', 'none');
 

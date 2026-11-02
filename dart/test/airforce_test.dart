@@ -116,6 +116,16 @@ void main() {
     expect(mock.requests.last.headers['authorization'], 'Bearer sk-air-test');
   });
 
+  test('models.retrieve keeps slashes in the id and sends no auth', () async {
+    const body = '{"id":"BAAI/bge-reranker-v2-m3","object":"model"}';
+    final mock = MockClient((req) => streamed(200, body));
+    final res = await client(mock).models.retrieve('BAAI/bge-reranker-v2-m3');
+    expect(res['id'], 'BAAI/bge-reranker-v2-m3');
+    expect(mock.requests.last.url.path, '/v1/models/BAAI/bge-reranker-v2-m3');
+    expect(mock.requests.last.method, 'GET');
+    expect(mock.requests.last.headers['authorization'], isNull);
+  });
+
   test('rerank.create posts to /v1/rerank and returns the results', () async {
     const body = '{"results":[{"index":1,"relevance_score":0.97},{"index":0,"relevance_score":0.08}],'
         '"usage":{"total_tokens":64}}';
