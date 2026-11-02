@@ -18,6 +18,15 @@ public final class ModelsResource extends Resource {
     return res != null && res.has("data") ? res.get("data") : res;
   }
 
+  /**
+   * One model, the same entry {@link #list} returns for it ({@code GET /v1/models/{model}}). Ids
+   * with slashes such as {@code BAAI/bge-reranker-v2-m3} are sent as written, not encoded. An
+   * unknown id throws the API's 404 error.
+   */
+  public JsonNode retrieve(String model) {
+    return transport.get("/v1/models/" + model, "none", null);
+  }
+
   /** Per-model analytics + channel breakdown. */
   public JsonNode detail(String model) {
     return transport.get("/api/models/" + enc(model) + "/detail", "none", null);
