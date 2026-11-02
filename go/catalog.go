@@ -64,6 +64,17 @@ func (s *ModelsService) ListRaw(ctx context.Context, channels bool) ([]map[strin
 	return out.Data, err
 }
 
+// Retrieve returns one model, the same entry List returns for it
+// (GET /v1/models/{model}). Ids with slashes such as "BAAI/bge-reranker-v2-m3"
+// are sent as written, not escaped. An unknown id returns the API's 404 error.
+func (s *ModelsService) Retrieve(ctx context.Context, model string) (*Model, error) {
+	var out Model
+	if err := s.client.requestJSON(ctx, http.MethodGet, "/v1/models/"+model, requestOptions{auth: "none"}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // Detail returns per-model analytics + channel breakdown.
 func (s *ModelsService) Detail(ctx context.Context, model string) (map[string]any, error) {
 	var out map[string]any
