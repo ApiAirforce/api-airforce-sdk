@@ -105,20 +105,7 @@ await File.WriteAllBytesAsync("out.mp3", audio);
 // Video (async — poll until done)
 var video = await client.Video.GenerateAndWaitAsync(new { model = "minimax-hailuo-02", prompt = "a paper plane over a city" });
 Console.WriteLine(video!["result_url"]!.GetValue<string>());
-
-// 3D (async — poll until done, then download the model file)
-var task = await client.ThreeD.GenerateAndWaitAsync(new
-{
-    model = "trellis-2",
-    image_urls = new[] { "https://example.com/chair.png" },
-    resolution = "medium",
-});
-byte[] glb = await client.ThreeD.DownloadAsync(task!["task_id"]!.GetValue<string>());
-await File.WriteAllBytesAsync("chair.glb", glb);
 ```
-
-3D tasks are billed only once a worker claims them (failures are refunded) and expire —
-together with their artifacts — after 24 hours.
 
 ## Account, keys & billing
 
