@@ -121,6 +121,21 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task ModelsRetrieve_KeepsSlashesAndSendsNoAuth()
+    {
+        var handler = new MockHandler(Json(HttpStatusCode.OK,
+            "{\"id\":\"BAAI/bge-reranker-v2-m3\",\"object\":\"model\"}"));
+        using var client = Client(handler);
+
+        var res = await client.Models.RetrieveAsync("BAAI/bge-reranker-v2-m3");
+
+        Assert.Equal("BAAI/bge-reranker-v2-m3", res!["id"]!.GetValue<string>());
+        Assert.Equal(HttpMethod.Get, handler.Last.Method);
+        Assert.Equal("/v1/models/BAAI/bge-reranker-v2-m3", handler.Last.RequestUri!.AbsolutePath);
+        Assert.Null(MockHandler.Auth(handler.Last));
+    }
+
+    [Fact]
     public async Task RerankCreate_SendsBodyAndParsesResults()
     {
         const string body =

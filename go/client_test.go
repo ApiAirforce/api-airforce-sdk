@@ -195,6 +195,33 @@ func TestEmbeddingsCreate(t *testing.T) {
 	}
 }
 
+func TestModelsRetrieveKeepsSlashes(t *testing.T) {
+	var gotPath, gotAuth string
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		gotAuth = r.Header.Get("authorization")
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"id":"BAAI/bge-reranker-v2-m3","object":"model"}`))
+	}, WithAPIKey("sk-air-test"))
+
+	m, err := client.Models.Retrieve(context.Background(), "BAAI/bge-reranker-v2-m3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/models/BAAI/bge-reranker-v2-m3" || gotAuth != "" {
+		t.Fatalf("path=%q auth=%q", gotPath, gotAuth)
+	}
+	if m.ID != "BAAI/bge-reranker-v2-m3" {
+		t.Fatalf("model = %+v", m)
+	}
+}
+
+func TestModelPathEscapesEachSegment(t *testing.T) {
+	if got := modelPath("org/odd id?#%"); got != "/v1/models/org/odd%20id%3F%23%25" {
+		t.Fatalf("modelPath = %q", got)
+	}
+}
+
 func TestRerankCreate(t *testing.T) {
 	var gotAuth, gotPath string
 	var gotBody map[string]any

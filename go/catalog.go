@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // Model is a public model entry. Only commonly used fields are typed; use
@@ -62,6 +63,29 @@ func (s *ModelsService) ListRaw(ctx context.Context, channels bool) ([]map[strin
 	}
 	err := s.client.requestJSON(ctx, http.MethodGet, "/v1/models", s.listOptions(channels), &out)
 	return out.Data, err
+}
+
+// modelPath builds /v1/models/{model} with each "/"-separated segment escaped,
+// so slashes stay path separators while "?", "#", "%" or spaces cannot change
+// the request.
+func modelPath(model string) string {
+	parts := strings.Split(model, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return "/v1/models/" + strings.Join(parts, "/")
+}
+
+// Retrieve returns one model, the same entry List returns for it
+// (GET /v1/models/{model}). Ids with slashes such as "BAAI/bge-reranker-v2-m3"
+// keep their slashes; each segment is escaped. An unknown id returns the API's
+// 404 error.
+func (s *ModelsService) Retrieve(ctx context.Context, model string) (*Model, error) {
+	var out Model
+	if err := s.client.requestJSON(ctx, http.MethodGet, modelPath(model), requestOptions{auth: "none"}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Detail returns per-model analytics + channel breakdown.

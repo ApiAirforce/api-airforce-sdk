@@ -25,6 +25,37 @@ RERANK_RESPONSE = {
 }
 
 
+# --- Models retrieve -----------------------------------------------------------
+
+def test_models_retrieve_keeps_slashes_and_returns_the_model():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.raw_path.decode()
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"id": "BAAI/bge-reranker-v2-m3", "object": "model", "media_type": "rerank"})
+
+    client = client_with(handler, api_key="sk-air-test")
+    res = client.models.retrieve("BAAI/bge-reranker-v2-m3")
+    assert seen["path"] == "/v1/models/BAAI/bge-reranker-v2-m3"
+    assert seen["auth"] is None
+    assert res["media_type"] == "rerank"
+
+    client.models.retrieve("odd id?#%")
+    assert seen["path"] == "/v1/models/odd%20id%3F%23%25"
+
+
+async def test_async_models_retrieve():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/models/gpt-4o-transcribe"
+        return httpx.Response(200, json={"id": "gpt-4o-transcribe", "object": "model"})
+
+    client = AsyncAirforce(api_key="sk-air-test", http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    res = await client.models.retrieve("gpt-4o-transcribe")
+    assert res["id"] == "gpt-4o-transcribe"
+    await client.aclose()
+
+
 # --- Rerank --------------------------------------------------------------------
 
 def test_rerank_create_sends_body_and_returns_provider_body():

@@ -20,6 +20,16 @@ final class Models
         return is_array($res) && isset($res['data']) ? $res['data'] : $res;
     }
 
+    /**
+     * One model, the same entry list() returns for it (GET /v1/models/{model}). Ids with slashes
+     * such as `BAAI/bge-reranker-v2-m3` keep their slashes; each segment is percent-encoded. An
+     * unknown id throws the API's 404 error.
+     */
+    public function retrieve(string $model): mixed
+    {
+        return $this->t->get('/v1/models/' . implode('/', array_map('rawurlencode', explode('/', $model))), 'none');
+    }
+
     public function detail(string $model): mixed
     {
         return $this->t->get('/api/models/' . rawurlencode($model) . '/detail', 'none');

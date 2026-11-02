@@ -136,6 +136,32 @@ async fn error_mapping_payment_required() {
 }
 
 #[tokio::test]
+async fn models_retrieve_keeps_slashes_in_the_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models/BAAI/bge-reranker-v2-m3"))
+        .respond_with(json_response(
+            200,
+            r#"{"id":"BAAI/bge-reranker-v2-m3","object":"model"}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .api_key("sk-air-test")
+        .base_url(server.uri())
+        .build();
+    let res = client
+        .models()
+        .retrieve("BAAI/bge-reranker-v2-m3")
+        .await
+        .unwrap();
+    assert_eq!(res["id"], "BAAI/bge-reranker-v2-m3");
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests[0].headers.get("authorization").is_none());
+}
+
+#[tokio::test]
 async fn rerank_create_sends_body_and_returns_results() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

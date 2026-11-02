@@ -152,6 +152,15 @@ eq($res['usage']['prompt_tokens'], 2, 'embeddings usage');
 eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/embeddings', 'embeddings path');
 eq($mock->requests[0]['headers']['authorization'] ?? null, 'Bearer sk-air-test', 'embeddings auth header');
 
+// 8a. models->retrieve keeps slashes in the id and sends no auth
+$mock = new MockSender(static fn () => jsonResp(200, '{"id":"BAAI/bge-reranker-v2-m3","object":"model"}'));
+$client = new Client(apiKey: 'sk-air-test', baseUrl: 'https://api.airforce', sender: $mock);
+$res = $client->models->retrieve('BAAI/bge-reranker-v2-m3');
+eq($res['id'], 'BAAI/bge-reranker-v2-m3', 'models retrieve id');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/models/BAAI/bge-reranker-v2-m3', 'models retrieve path');
+eq($mock->requests[0]['method'], 'GET', 'models retrieve method');
+eq($mock->requests[0]['headers']['authorization'] ?? null, null, 'models retrieve sends no auth');
+
 // 8b. rerank sends api-key auth, forwards the body and returns the provider results
 $mock = new MockSender(static fn () => jsonResp(200, '{"results":[{"index":1,"relevance_score":0.97},'
     . '{"index":0,"relevance_score":0.08}],"usage":{"total_tokens":64}}'));

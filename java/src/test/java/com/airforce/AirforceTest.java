@@ -170,6 +170,23 @@ class AirforceTest {
   }
 
   @Test
+  void modelsRetrieveKeepsSlashes() throws IOException {
+    AtomicReference<String> auth = new AtomicReference<>();
+    AtomicReference<String> path = new AtomicReference<>();
+    Airforce client = start(ex -> {
+      auth.set(ex.getRequestHeaders().getFirst("authorization"));
+      path.set(ex.getRequestURI().getRawPath());
+      json(ex, 200, "{\"id\":\"BAAI/bge-reranker-v2-m3\",\"object\":\"model\"}");
+    });
+
+    JsonNode res = client.models().retrieve("BAAI/bge-reranker-v2-m3");
+
+    assertEquals("/v1/models/BAAI/bge-reranker-v2-m3", path.get());
+    assertNull(auth.get());
+    assertEquals("BAAI/bge-reranker-v2-m3", res.get("id").asText());
+  }
+
+  @Test
   void rerankCreate() throws IOException {
     AtomicReference<String> auth = new AtomicReference<>();
     AtomicReference<String> path = new AtomicReference<>();
