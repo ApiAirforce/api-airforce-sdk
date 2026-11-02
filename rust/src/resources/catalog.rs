@@ -23,6 +23,16 @@ impl Models<'_> {
         Ok(res.get("data").cloned().unwrap_or(res))
     }
 
+    /// One model, the same entry `list` returns for it (`GET /v1/models/{model}`).
+    ///
+    /// Ids with slashes such as `BAAI/bge-reranker-v2-m3` are sent as written,
+    /// not encoded. An unknown id returns the API's 404 error.
+    pub async fn retrieve(&self, model: &str) -> Result<Value> {
+        self.client
+            .get_json(&format!("/v1/models/{model}"), "none", None)
+            .await
+    }
+
     pub async fn detail(&self, model: &str) -> Result<Value> {
         self.client
             .get_json(&format!("/api/models/{}/detail", enc(model)), "none", None)
