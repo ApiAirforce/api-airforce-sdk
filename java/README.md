@@ -93,6 +93,30 @@ JsonNode vector = emb.get("data").get(0).get("embedding");
 
 Billed on input tokens only; `input` accepts a string, string[], int[] or int[][].
 
+
+## Rerank, model lookup and image edits
+
+```java
+JsonNode res = client.rerank().create(Map.of(
+    "model", "BAAI/bge-reranker-v2-m3",
+    "query", "How do I rotate an API key?",
+    "documents", List.of("Billing is pay-as-you-go.", "Create a new key, switch to it, delete the old one."),
+    "top_n", 1));
+int best = res.get("results").get(0).get("index").asInt();
+
+JsonNode model = client.models().retrieve("BAAI/bge-reranker-v2-m3"); // one listing entry
+
+JsonNode edited = client.images().edit(
+    Map.of("model", "gpt-image-1", "prompt", "add a red hat"),
+    List.of(Map.entry("photo.png", Files.readAllBytes(Path.of("photo.png")))),
+    null);
+```
+
+Rerank scores documents against a query (billed on input tokens; `index` points into
+`documents`). Model lookup returns one entry of the model list; ids with slashes work as
+written. Image edits upload up to 16 input images (25 MB each) to a model whose
+`image_caps.max_input_images` is above 0.
+
 ## Media
 
 ```java

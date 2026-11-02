@@ -113,6 +113,33 @@ for _, d := range emb.Data {
 fmt.Println("input tokens:", emb.Usage.PromptTokens) // billed on input tokens only
 ```
 
+
+## Rerank, model lookup and image edits
+
+```go
+topN := 1
+res, _ := client.Rerank.Create(ctx, airforce.RerankParams{
+    Model:     "BAAI/bge-reranker-v2-m3",
+    Query:     "How do I rotate an API key?",
+    Documents: []any{"Billing is pay-as-you-go.", "Create a new key, switch to it, delete the old one."},
+    TopN:      &topN,
+})
+fmt.Println(res.Results[0].Index)
+
+model, _ := client.Models.Retrieve(ctx, "BAAI/bge-reranker-v2-m3") // one listing entry
+
+edited, _ := client.Images.Edit(ctx, airforce.ImageEditParams{
+    Model:  "gpt-image-1",
+    Prompt: "add a red hat",
+    Images: []airforce.ImageFile{{Name: "photo.png", Data: photo}},
+})
+```
+
+Rerank scores documents against a query (billed on input tokens; `index` points into
+`documents`). Model lookup returns one entry of the model list; ids with slashes work as
+written. Image edits upload up to 16 input images (25 MB each) to a model whose
+`image_caps.max_input_images` is above 0.
+
 ## Media
 
 ```go

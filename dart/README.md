@@ -83,6 +83,30 @@ final res = await client.embeddings.create({
 print(res['data'][0]['embedding']);
 ```
 
+
+## Rerank, model lookup and image edits
+
+```dart
+final res = await client.rerank.create({
+  'model': 'BAAI/bge-reranker-v2-m3',
+  'query': 'How do I rotate an API key?',
+  'documents': ['Billing is pay-as-you-go.', 'Create a new key, switch to it, delete the old one.'],
+  'top_n': 1,
+});
+final best = res['results'][0]['index'];
+
+final model = await client.models.retrieve('BAAI/bge-reranker-v2-m3'); // one listing entry
+
+final edited = await client.images.edit('gpt-image-1', 'add a red hat', [
+  (filename: 'photo.png', data: await File('photo.png').readAsBytes()),
+]);
+```
+
+Rerank scores documents against a query (billed on input tokens; `index` points into
+`documents`). Model lookup returns one entry of the model list; ids with slashes work as
+written. Image edits upload up to 16 input images (25 MB each) to a model whose
+`image_caps.max_input_images` is above 0.
+
 ## Media
 
 ```dart
