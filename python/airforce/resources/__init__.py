@@ -21,11 +21,13 @@ from .inference import (
     AsyncEmbeddings,
     AsyncGemini,
     AsyncMessages,
+    AsyncRerank,
     AsyncResponses,
     Chat,
     Embeddings,
     Gemini,
     Messages,
+    Rerank,
     Responses,
 )
 from .media import (
@@ -44,7 +46,7 @@ from .notifications import AsyncNotifications, Notifications
 from .org import AsyncOrg, Org
 
 __all__ = [
-    "Chat", "AsyncChat", "Embeddings", "AsyncEmbeddings",
+    "Chat", "AsyncChat", "Embeddings", "AsyncEmbeddings", "Rerank", "AsyncRerank",
     "Messages", "AsyncMessages", "Responses", "AsyncResponses",
     "Gemini", "AsyncGemini",
     "Models", "AsyncModels", "Images", "AsyncImages", "Audio", "AsyncAudio",

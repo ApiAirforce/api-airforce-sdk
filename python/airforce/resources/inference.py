@@ -1,4 +1,4 @@
-"""Inference resources: chat completions, embeddings, Anthropic messages, OpenAI responses."""
+"""Inference resources: chat completions, embeddings, rerank, Anthropic messages, OpenAI responses."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from ._base import AsyncAPIResource, SyncAPIResource, clean, enc
 
 _CHAT = "/v1/chat/completions"
 _EMBEDDINGS = "/v1/embeddings"
+_RERANK = "/v1/rerank"
 _MESSAGES = "/v1/messages"
 _COUNT_TOKENS = "/v1/messages/count_tokens"
 _RESPONSES = "/v1/responses"
@@ -61,6 +62,27 @@ class Embeddings(SyncAPIResource):
 class AsyncEmbeddings(AsyncAPIResource):
     async def create(self, *, model: str, input: Any, **params: Any) -> Any:
         return await self._transport.request("POST", _EMBEDDINGS, json={"model": model, "input": input, **clean(**params)})
+
+
+class Rerank(SyncAPIResource):
+    def create(self, *, model: str, query: str, documents: List[Any], **params: Any) -> Any:
+        """Score ``documents`` (strings or ``{"text": ...}`` objects, at most 1,000)
+        against ``query``. Optional params: top_n, return_documents,
+        max_chunks_per_doc, overlap_tokens, user.
+
+        Billed on input tokens only; no streaming. The response is the model
+        provider's body as received, typically ``{"results": [{"index",
+        "relevance_score", "document"?}], "usage": {...}}``, where ``index`` points
+        into ``documents``.
+        """
+        body = {"model": model, "query": query, "documents": documents, **clean(**params)}
+        return self._transport.request("POST", _RERANK, json=body)
+
+
+class AsyncRerank(AsyncAPIResource):
+    async def create(self, *, model: str, query: str, documents: List[Any], **params: Any) -> Any:
+        body = {"model": model, "query": query, "documents": documents, **clean(**params)}
+        return await self._transport.request("POST", _RERANK, json=body)
 
 
 class Messages(SyncAPIResource):
