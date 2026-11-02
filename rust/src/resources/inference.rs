@@ -67,6 +67,27 @@ impl Embeddings<'_> {
     }
 }
 
+/// Rerank — `POST /v1/rerank`.
+pub struct Rerank<'a> {
+    pub(crate) client: &'a Client,
+}
+
+impl Rerank<'_> {
+    /// Score documents against a query and return them ordered by relevance.
+    ///
+    /// Required: `model`, `query` and `documents` (strings or objects with a
+    /// `text` field, at most 1,000). Optional: `top_n`, `return_documents`,
+    /// `max_chunks_per_doc`, `overlap_tokens`, `user`. Billed on input tokens
+    /// only; no streaming. The model provider's body is returned as received,
+    /// typically `{results:[{index, relevance_score, document?}], usage}`.
+    pub async fn create(&self, request: impl Serialize) -> Result<Value> {
+        let body = serde_json::to_value(request)?;
+        self.client
+            .request_json(Method::POST, "/v1/rerank", "api_key", Some(body))
+            .await
+    }
+}
+
 /// Anthropic-compatible messages — `POST /v1/messages`.
 pub struct Messages<'a> {
     pub(crate) client: &'a Client,

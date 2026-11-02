@@ -136,6 +136,35 @@ async fn error_mapping_payment_required() {
 }
 
 #[tokio::test]
+async fn rerank_create_sends_body_and_returns_results() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/rerank"))
+        .and(header("authorization", "Bearer sk-air-test"))
+        .and(body_json(
+            json!({"model": "rerank-1", "query": "rotate a key", "documents": ["a", "b"], "top_n": 1}),
+        ))
+        .respond_with(json_response(
+            200,
+            r#"{"results":[{"index":1,"relevance_score":0.97},{"index":0,"relevance_score":0.08}],"usage":{"total_tokens":64}}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let client = Client::builder()
+        .api_key("sk-air-test")
+        .base_url(server.uri())
+        .build();
+    let res = client
+        .rerank()
+        .create(json!({"model": "rerank-1", "query": "rotate a key", "documents": ["a", "b"], "top_n": 1}))
+        .await
+        .unwrap();
+    assert_eq!(res["results"][0]["index"], 1);
+    assert_eq!(res["usage"]["total_tokens"], 64);
+}
+
+#[tokio::test]
 async fn embeddings_create_sends_bearer_and_parses() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
