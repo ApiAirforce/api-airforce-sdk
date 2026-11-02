@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -206,11 +207,13 @@ func TestRerankCreate(t *testing.T) {
 			`"usage":{"total_tokens":64}}`))
 	}, WithAPIKey("sk-air-test"))
 
+	topN, returnDocs := 1, false
 	res, err := client.Rerank.Create(context.Background(), RerankParams{
-		Model:     "rerank-1",
-		Query:     "rotate a key",
-		Documents: []any{"a", map[string]any{"text": "b"}},
-		TopN:      1,
+		Model:           "rerank-1",
+		Query:           "rotate a key",
+		Documents:       []any{"a", map[string]any{"text": "b"}},
+		TopN:            &topN,
+		ReturnDocuments: &returnDocs,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -221,14 +224,20 @@ func TestRerankCreate(t *testing.T) {
 	if gotBody["query"] != "rotate a key" || gotBody["top_n"] != float64(1) {
 		t.Fatalf("body = %v", gotBody)
 	}
-	if _, ok := gotBody["return_documents"]; ok {
-		t.Fatalf("unset return_documents was sent: %v", gotBody)
+	if v, ok := gotBody["return_documents"]; !ok || v != false {
+		t.Fatalf("explicit return_documents=false not sent: %v", gotBody)
+	}
+	if _, ok := gotBody["max_chunks_per_doc"]; ok {
+		t.Fatalf("unset max_chunks_per_doc was sent: %v", gotBody)
 	}
 	if len(res.Results) != 2 || res.Results[0].Index != 1 || res.Results[0].RelevanceScore != 0.97 {
 		t.Fatalf("results = %+v", res.Results)
 	}
 	if res.Usage["total_tokens"] != float64(64) {
 		t.Fatalf("usage = %v", res.Usage)
+	}
+	if !strings.Contains(string(res.Raw), `"relevance_score":0.97`) {
+		t.Fatalf("raw body not kept: %s", res.Raw)
 	}
 }
 
