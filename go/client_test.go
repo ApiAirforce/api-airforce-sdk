@@ -216,6 +216,12 @@ func TestModelsRetrieveKeepsSlashes(t *testing.T) {
 	}
 }
 
+func TestModelPathEscapesEachSegment(t *testing.T) {
+	if got := modelPath("org/odd id?#%"); got != "/v1/models/org/odd%20id%3F%23%25" {
+		t.Fatalf("modelPath = %q", got)
+	}
+}
+
 func TestRerankCreate(t *testing.T) {
 	var gotAuth, gotPath string
 	var gotBody map[string]any

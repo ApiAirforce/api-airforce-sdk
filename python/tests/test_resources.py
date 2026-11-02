@@ -41,6 +41,9 @@ def test_models_retrieve_keeps_slashes_and_returns_the_model():
     assert seen["auth"] is None
     assert res["media_type"] == "rerank"
 
+    client.models.retrieve("odd id?#%")
+    assert seen["path"] == "/v1/models/odd%20id%3F%23%25"
+
 
 async def test_async_models_retrieve():
     def handler(request: httpx.Request) -> httpx.Response:

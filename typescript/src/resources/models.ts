@@ -92,13 +92,14 @@ export class Models extends APIResource {
 
   /**
    * One model, the same entry `list()` returns for it (`GET /v1/models/{model}`).
-   * Ids with slashes (`BAAI/bge-reranker-v2-m3`) are sent as written, not encoded.
+   * Ids with slashes (`BAAI/bge-reranker-v2-m3`) keep their slashes; each segment
+   * is percent-encoded, so `?`, `#`, `%` or spaces cannot change the request.
    * An unknown id rejects with the API's 404 error.
    */
   retrieve(model: string, options: RequestConfig = {}): Promise<Model> {
     return this.transport.request<Model>({
       method: "GET",
-      path: `/v1/models/${model}`,
+      path: `/v1/models/${model.split("/").map(encodeURIComponent).join("/")}`,
       auth: "none",
       ...options,
     });

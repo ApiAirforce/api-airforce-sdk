@@ -22,12 +22,12 @@ final class Models
 
     /**
      * One model, the same entry list() returns for it (GET /v1/models/{model}). Ids with slashes
-     * such as `BAAI/bge-reranker-v2-m3` are sent as written, not encoded. An unknown id throws the
-     * API's 404 error.
+     * such as `BAAI/bge-reranker-v2-m3` keep their slashes; each segment is percent-encoded. An
+     * unknown id throws the API's 404 error.
      */
     public function retrieve(string $model): mixed
     {
-        return $this->t->get('/v1/models/' . $model, 'none');
+        return $this->t->get('/v1/models/' . implode('/', array_map('rawurlencode', explode('/', $model))), 'none');
     }
 
     public function detail(string $model): mixed

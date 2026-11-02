@@ -25,12 +25,10 @@ impl Models<'_> {
 
     /// One model, the same entry `list` returns for it (`GET /v1/models/{model}`).
     ///
-    /// Ids with slashes such as `BAAI/bge-reranker-v2-m3` are sent as written,
-    /// not encoded. An unknown id returns the API's 404 error.
+    /// Ids with slashes such as `BAAI/bge-reranker-v2-m3` keep their slashes;
+    /// each segment is percent-encoded. An unknown id returns the API's 404 error.
     pub async fn retrieve(&self, model: &str) -> Result<Value> {
-        self.client
-            .get_json(&format!("/v1/models/{model}"), "none", None)
-            .await
+        self.client.get_json(&model_path(model), "none", None).await
     }
 
     pub async fn detail(&self, model: &str) -> Result<Value> {
@@ -54,4 +52,12 @@ impl Models<'_> {
             .get_json("/v1/playground/model-classes", "none", None)
             .await
     }
+}
+
+/// `/v1/models/{model}` with each `/`-separated segment percent-encoded, so
+/// slashes stay path separators while `?`, `#`, `%` or spaces cannot change the
+/// request.
+fn model_path(model: &str) -> String {
+    let parts: Vec<String> = model.split('/').map(enc).collect();
+    format!("/v1/models/{}", parts.join("/"))
 }

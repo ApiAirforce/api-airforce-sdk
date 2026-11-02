@@ -47,6 +47,13 @@ describe("models.retrieve", () => {
     const headers = calls[0]?.init.headers as Headers;
     expect(headers.get("authorization")).toBeNull();
   });
+
+  it("encodes each segment so ? # % cannot change the request", async () => {
+    const { fetch, calls } = makeFetch([json(200, { id: "x", object: "model" })]);
+    const client = new Airforce({ fetch });
+    await client.models.retrieve("org/odd id?#%");
+    expect(calls[0]?.url).toBe("https://api.airforce/v1/models/org/odd%20id%3F%23%25");
+  });
 });
 
 describe("rerank", () => {
