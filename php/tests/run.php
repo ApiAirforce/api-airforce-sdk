@@ -152,6 +152,21 @@ eq($res['usage']['prompt_tokens'], 2, 'embeddings usage');
 eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/embeddings', 'embeddings path');
 eq($mock->requests[0]['headers']['authorization'] ?? null, 'Bearer sk-air-test', 'embeddings auth header');
 
+// 8c. images->edit sends one image part per input plus the mask
+$mock = new MockSender(static fn () => jsonResp(200, '{"created":1,"data":[{"url":"https://example.com/o.png"}]}'));
+$client = new Client(apiKey: 'sk-air-test', baseUrl: 'https://api.airforce', sender: $mock);
+$res = $client->images->edit('img-1', 'add a hat', [
+    ['filename' => 'a.png', 'data' => "\x01"],
+    ['filename' => 'b.png', 'data' => "\x02"],
+], ['filename' => 'm.png', 'data' => "\x03"]);
+eq($res['data'][0]['url'], 'https://example.com/o.png', 'images edit response');
+eq(parse_url($mock->requests[0]['url'], PHP_URL_PATH), '/v1/images/edits', 'images edit path');
+$sent = (string) $mock->requests[0]['body'];
+eq(substr_count($sent, 'name="image"'), 2, 'images edit sends two image parts');
+eq(str_contains($sent, 'filename="a.png"'), true, 'images edit first file name');
+eq(str_contains($sent, 'name="mask"; filename="m.png"'), true, 'images edit mask part');
+eq(str_contains($sent, 'add a hat'), true, 'images edit prompt field');
+
 // 8a. models->retrieve keeps slashes in the id and sends no auth
 $mock = new MockSender(static fn () => jsonResp(200, '{"id":"BAAI/bge-reranker-v2-m3","object":"model"}'));
 $client = new Client(apiKey: 'sk-air-test', baseUrl: 'https://api.airforce', sender: $mock);
