@@ -121,6 +121,32 @@ public class ClientTests
     }
 
     [Fact]
+    public async Task RerankCreate_SendsBodyAndParsesResults()
+    {
+        const string body =
+            "{\"results\":[{\"index\":1,\"relevance_score\":0.97},{\"index\":0,\"relevance_score\":0.08}]," +
+            "\"usage\":{\"total_tokens\":64}}";
+        var handler = new MockHandler(Json(HttpStatusCode.OK, body));
+        using var client = Client(handler);
+
+        var res = await client.Rerank.CreateAsync(new
+        {
+            model = "rerank-1",
+            query = "rotate a key",
+            documents = new[] { "a", "b" },
+            top_n = 1,
+        });
+
+        Assert.Equal(1, res!["results"]![0]!["index"]!.GetValue<int>());
+        Assert.Equal(64, res["usage"]!["total_tokens"]!.GetValue<int>());
+        Assert.Equal("Bearer sk-air-test", MockHandler.Auth(handler.Last));
+        Assert.Equal(HttpMethod.Post, handler.Last.Method);
+        Assert.Equal("/v1/rerank", handler.Last.RequestUri!.AbsolutePath);
+        Assert.Contains("\"query\":\"rotate a key\"", handler.LastBody);
+        Assert.Contains("\"documents\":[\"a\",\"b\"]", handler.LastBody);
+    }
+
+    [Fact]
     public async Task EmbeddingsCreate_SendsBearerAndParsesResponse()
     {
         const string body =
