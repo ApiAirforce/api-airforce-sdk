@@ -108,18 +108,7 @@ Files.write(Path.of("out.mp3"), audio);
 JsonNode video = client.video().generateAndWait(
     Map.of("model", "minimax-hailuo-02", "prompt", "a paper plane over a city"), 0, 0);
 System.out.println(video.get("result_url").asText());
-
-// 3D (async — poll until done, then download the artifact)
-JsonNode task = client.threeD().generateAndWait(Map.of(
-    "model", "shape-1",
-    "image_urls", List.of("https://example.com/toy.png"),
-    "resolution", "high"), 0, 0);
-byte[] glb = client.threeD().downloadContent(task.get("task_id").asText());
-Files.write(Path.of("model.glb"), glb);
 ```
-
-3D tasks and their artifacts expire after 24 hours; credits are deducted only when a
-worker picks up the task, and failures are refunded.
 
 ## Account, keys & billing
 

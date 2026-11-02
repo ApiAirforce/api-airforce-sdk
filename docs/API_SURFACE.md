@@ -310,6 +310,10 @@ The SDK should provide a `waitForCompletion` helper (poll or SSE).
 
 ## 7. 3D generation (async task model)
 
+> **No public 3D model is listed today** (`GET /v1/models` has none). The contract below
+> is kept so the SDKs' 3D clients keep working the day a model is listed; the READMEs show
+> no 3D example until then.
+
 `api_key`-authenticated; mirrors the video task model. Owner-checked on every read — a
 poll/download/delete for another user's task returns 404 (never 403). Tasks and their
 stored artifacts expire after **24 h** (`expires_at`).

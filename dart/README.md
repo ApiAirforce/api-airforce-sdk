@@ -98,12 +98,6 @@ await File('out.mp3').writeAsBytes(audio);
 // Video (async — poll until done)
 final video = await client.video.generateAndWait({'model': 'minimax-hailuo-02', 'prompt': 'a paper plane over a city'});
 print(video['result_url']);
-
-// 3D (async — poll until done, then download the artifact)
-final task = await client.threeD.generateAndWait({
-  'model': '3d-1', 'image_urls': ['https://example.com/toy.png'],
-});
-await File('model.glb').writeAsBytes(await client.threeD.content(task['task_id']));
 ```
 
 ## Account, keys & billing
