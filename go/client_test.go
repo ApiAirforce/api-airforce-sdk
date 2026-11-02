@@ -195,6 +195,47 @@ func TestEmbeddingsCreate(t *testing.T) {
 	}
 }
 
+func TestImagesEditSendsMultipart(t *testing.T) {
+	var gotPath string
+	var images, masks []string
+	var prompt, n string
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse: %v", err)
+		}
+		for _, fh := range r.MultipartForm.File["image"] {
+			images = append(images, fh.Filename)
+		}
+		for _, fh := range r.MultipartForm.File["mask"] {
+			masks = append(masks, fh.Filename)
+		}
+		prompt, n = r.FormValue("prompt"), r.FormValue("n")
+		w.Header().Set("content-type", "application/json")
+		w.Write([]byte(`{"created":1,"data":[{"url":"https://example.com/o.png"}]}`))
+	}, WithAPIKey("sk-air-test"))
+
+	res, err := client.Images.Edit(context.Background(), ImageEditParams{
+		Model:  "img-1",
+		Prompt: "add a hat",
+		Images: []ImageFile{{"a.png", []byte("1")}, {"b.png", []byte("2")}},
+		Mask:   &ImageFile{"m.png", []byte("3")},
+		N:      1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/v1/images/edits" || prompt != "add a hat" || n != "1" {
+		t.Fatalf("path=%q prompt=%q n=%q", gotPath, prompt, n)
+	}
+	if strings.Join(images, ",") != "a.png,b.png" || strings.Join(masks, ",") != "m.png" {
+		t.Fatalf("images=%v masks=%v", images, masks)
+	}
+	if len(res.Data) != 1 || res.Data[0].URL != "https://example.com/o.png" {
+		t.Fatalf("data = %+v", res.Data)
+	}
+}
+
 func TestModelsRetrieveKeepsSlashes(t *testing.T) {
 	var gotPath, gotAuth string
 	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
