@@ -8,6 +8,7 @@ import { Messages } from "./resources/messages";
 import { Responses } from "./resources/responses";
 import { Gemini } from "./resources/gemini";
 import { Embeddings } from "./resources/embeddings";
+import { Rerank } from "./resources/rerank";
 import { Models } from "./resources/models";
 import { Images } from "./resources/images";
 import { Audio } from "./resources/audio";
@@ -76,6 +77,8 @@ export class Airforce {
   readonly gemini: Gemini;
   /** OpenAI-compatible embeddings (`/v1/embeddings`). */
   readonly embeddings: Embeddings;
+  /** Document reranking (`/v1/rerank`). */
+  readonly rerank: Rerank;
   /** Model catalog & discovery. */
   readonly models: Models;
   /** Image generation. */
@@ -135,6 +138,7 @@ export class Airforce {
     this.responses = new Responses(this.transport);
     this.gemini = new Gemini(this.transport);
     this.embeddings = new Embeddings(this.transport);
+    this.rerank = new Rerank(this.transport);
     this.models = new Models(this.transport);
     this.images = new Images(this.transport);
     this.audio = new Audio(this.transport);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Airforce } from "../src/client";
 import { MissingCredentialError } from "../src/core/errors";
 import type { EmbeddingsResponse } from "../src/resources/embeddings";
+import type { RerankResponse } from "../src/resources/rerank";
 import type { ThreeDTask } from "../src/resources/threed";
 
 interface RecordedCall {
@@ -30,6 +31,48 @@ function json(status: number, body: unknown, headers?: Record<string, string>): 
     headers: { "content-type": "application/json", ...headers },
   });
 }
+
+describe("rerank", () => {
+  const reranked: RerankResponse = {
+    results: [
+      { index: 1, relevance_score: 0.97 },
+      { index: 0, relevance_score: 0.08 },
+    ],
+    usage: { total_tokens: 64 },
+  };
+
+  it("reranks documents with an API key", async () => {
+    const { fetch, calls } = makeFetch([json(200, reranked)]);
+    const client = new Airforce({ apiKey: "sk-air-test", fetch });
+
+    const res = await client.rerank.create({
+      model: "rerank-1",
+      query: "rotate a key",
+      documents: ["a", { text: "b" }],
+      top_n: 1,
+    });
+
+    expect(res.results[0]).toEqual({ index: 1, relevance_score: 0.97 });
+    expect(calls[0]?.url).toBe("https://api.airforce/v1/rerank");
+    expect(calls[0]?.init.method).toBe("POST");
+    const headers = calls[0]?.init.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer sk-air-test");
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      model: "rerank-1",
+      query: "rotate a key",
+      documents: ["a", { text: "b" }],
+      top_n: 1,
+    });
+  });
+
+  it("requires an API key", async () => {
+    const { fetch } = makeFetch([json(200, reranked)]);
+    const client = new Airforce({ fetch });
+    await expect(
+      client.rerank.create({ model: "m", query: "q", documents: ["x"] }),
+    ).rejects.toBeInstanceOf(MissingCredentialError);
+  });
+});
 
 describe("embeddings", () => {
   const embeddings: EmbeddingsResponse = {
