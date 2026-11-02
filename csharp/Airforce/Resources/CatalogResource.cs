@@ -15,6 +15,12 @@ public sealed class ModelsResource : Resource
         return res?["data"] ?? res;
     }
 
+    /// <summary>One model, the same entry <see cref="ListAsync"/> returns for it
+    /// (<c>GET /v1/models/{model}</c>). Ids with slashes such as <c>BAAI/bge-reranker-v2-m3</c>
+    /// are sent as written, not encoded. An unknown id throws the API's 404 error.</summary>
+    public Task<JsonNode?> RetrieveAsync(string model, CancellationToken ct = default)
+        => Transport.GetAsync($"/v1/models/{model}", "none", null, ct);
+
     public Task<JsonNode?> DetailAsync(string model, CancellationToken ct = default)
         => Transport.GetAsync($"/api/models/{Enc(model)}/detail", "none", null, ct);
 
