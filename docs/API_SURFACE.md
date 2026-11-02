@@ -168,6 +168,21 @@ usage:{prompt_tokens, total_tokens}}`. A request the upstream did not meter is b
 `503` (`api_error`) when the model is temporarily unavailable; `404` for unknown models;
 `400` on empty `input`.
 
+### POST `/v1/rerank` — `api_key`/`oauth_bearer(chat)` — no streaming
+
+Scores documents against a query and returns them ordered by relevance (typically after a
+vector search). Billed on **input tokens only**. Rerank models are the `/v1/models` rows
+with `media_type:'rerank'`.
+
+**Request**: `{model, query, documents: (string | {text, …})[] (≤1000, forwarded unchanged),
+top_n?, return_documents?, max_chunks_per_doc?, overlap_tokens?, user?}`. The chunking
+fields are model-specific and ignored where unsupported.
+
+**Response**: the model provider's answer, passed through unchanged — typically
+`{results:[{index, relevance_score, document?}], usage:{total_tokens}}`, where `index`
+points into `documents`. A few models name the usage field differently; SDKs return the
+body as received rather than a strict type.
+
 ### POST `/v1beta/models/{model}:{method}` — `api_key` (`x-goog-api-key`/`?key=`) — streaming ✔
 
 Gemini-compatible. `{method}` is `generateContent` or `streamGenerateContent`.
@@ -198,6 +213,15 @@ media price fields (`price_per_million_chars_cents?`, `price_per_audio_minute_ce
 `context_length?`, `max_output_tokens?`, `input_modalities?[]`, `output_modalities?[]`,
 `knowledge_cutoff?`, `released_unix?`, `customer_price_table?{}`. (60 s cache header.)
 
+### GET `/v1/models/{model}` — `public` (auth optional)
+
+One model: the same `Model` entry the list returns for it (OpenAI `models.retrieve`); it is
+looked up in the list, so a Bearer token tier-gates it the same way. IDs
+containing slashes are used as written, without URL-encoding (up to two slashes, e.g.
+`BAAI/bge-reranker-v2-m3`). Unknown id → `404` with the message
+`The model does not exist in https://api.airforce`. Query parameters such as
+`?channels=1` behave as on the list.
+
 ### GET `/api/models/{model}/detail` — `public`
 
 24h analytics + per-channel breakdown (brand-neutral). Rejects `__variant` ids (400).
@@ -227,6 +251,24 @@ forwarded to the provider. Supports `models` fallback + smart routing.
 
 **Response**: `{created?, data:[{url?, b64_json?}]}`. With `sse:true`, streams `data:` JSON
 events + `[DONE]`. Billed per image (`billing_unit='image'`, qty `n`), charged on success.
+
+### POST `/v1/images/edits` — `api_key`/`oauth_bearer(images)`
+
+OpenAI-compatible edit endpoint; runs the same path as `/v1/images/generations` (same
+models, prices and response shape). Use a model whose `image_caps.max_input_images` > 0.
+
+**Request** (multipart, as the OpenAI SDKs send `images.edit`): `model`, `prompt`,
+`image` (file; repeat as `image[]` for several references — `images`, `images[]` and
+`input_images` are accepted too, as files or image URLs), `mask?` (forwarded, but no listed
+model declares mask support), `n?`, `size?`, `aspect_ratio?`, `quality?`,
+`response_format?`='url'|'b64_json'. The JSON body of `/v1/images/generations` with
+`input_images` is accepted as well.
+
+**Limits**: up to 16 input images, 25 MB each (the model's own limit is
+`image_caps.max_input_images`); a request without an input image is refused with `400`
+instead of becoming text-to-image. Each input image can add to the price.
+
+**Response**: as `/v1/images/generations`.
 
 ---
 
