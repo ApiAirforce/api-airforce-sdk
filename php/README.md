@@ -82,7 +82,7 @@ echo $res['choices'][0]['message']['content'];   // the clean answer
 
 ```php
 $emb = $client->embeddings->create([
-    'model' => 'embed-1',
+    'model' => 'text-embedding-3-small',
     'input' => ['first text', 'second text'], // string | string[] | token arrays
 ]);
 $vector = $emb['data'][0]['embedding'];
@@ -98,12 +98,12 @@ $img = $client->images->generate(['model' => 'image-1', 'prompt' => 'a red bipla
 
 // Text-to-speech → bytes
 $audio = $client->audio->speech([
-    'model' => 'eleven-v3', 'voice' => '21m00Tcm4TlvDq8ikWAM', 'input' => 'Cleared for takeoff.',
+    'model' => 'tts-1', 'voice' => 'alloy', 'input' => 'Cleared for takeoff.',
 ]);
 file_put_contents('out.mp3', $audio);
 
 // Video (async — poll until done)
-$video = $client->video->generateAndWait(['model' => 'veo-3', 'prompt' => 'a paper plane over a city']);
+$video = $client->video->generateAndWait(['model' => 'minimax-hailuo-02', 'prompt' => 'a paper plane over a city']);
 echo $video['result_url'];
 
 // 3D (async — poll until done, then download the artifact)

@@ -91,12 +91,12 @@ final img = await client.images.generate({'model': 'image-1', 'prompt': 'a red b
 
 // Text-to-speech → bytes
 final audio = await client.audio.speech({
-  'model': 'eleven-v3', 'voice': '21m00Tcm4TlvDq8ikWAM', 'input': 'Cleared for takeoff.',
+  'model': 'tts-1', 'voice': 'alloy', 'input': 'Cleared for takeoff.',
 });
 await File('out.mp3').writeAsBytes(audio);
 
 // Video (async — poll until done)
-final video = await client.video.generateAndWait({'model': 'veo-3', 'prompt': 'a paper plane over a city'});
+final video = await client.video.generateAndWait({'model': 'minimax-hailuo-02', 'prompt': 'a paper plane over a city'});
 print(video['result_url']);
 
 // 3D (async — poll until done, then download the artifact)

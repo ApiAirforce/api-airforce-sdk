@@ -121,13 +121,13 @@ img, _ := client.Images.Generate(ctx, airforce.ImageParams{Model: "image-1", Pro
 
 // Text-to-speech → bytes
 audio, _ := client.Audio.Speech(ctx, airforce.SpeechParams{
-    Model: "eleven-v3", Voice: "21m00Tcm4TlvDq8ikWAM", Input: "Cleared for takeoff.",
+    Model: "tts-1", Voice: "alloy", Input: "Cleared for takeoff.",
 })
 os.WriteFile("out.mp3", audio, 0o644)
 
 // Video (async — poll until done)
 video, _ := client.Video.GenerateAndWait(ctx,
-    airforce.VideoParams{Model: "veo-3", Prompt: "a paper plane over a city"}, 0, 0)
+    airforce.VideoParams{Model: "minimax-hailuo-02", Prompt: "a paper plane over a city"}, 0, 0)
 fmt.Println(video.ResultURL)
 
 // 3D (async — poll until done, then download the glb/ply artifact)

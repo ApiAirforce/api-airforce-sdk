@@ -86,7 +86,7 @@ via `delta["reasoning"]`.
 ## Embeddings
 
 ```python
-res = client.embeddings.create(model="embed-1", input=["hello", "world"])
+res = client.embeddings.create(model="text-embedding-3-small", input=["hello", "world"])
 vectors = [d["embedding"] for d in res["data"]]
 ```
 
@@ -110,7 +110,7 @@ client.chat.create(
 img = client.images.generate(model="image-1", prompt="a red biplane")
 
 # Text-to-speech → bytes
-audio = client.audio.speech(model="eleven-v3", voice="21m00Tcm4TlvDq8ikWAM",
+audio = client.audio.speech(model="tts-1", voice="alloy",
                             input="Cleared for takeoff.")
 open("out.mp3", "wb").write(audio)
 
@@ -119,7 +119,7 @@ with open("clip.mp3", "rb") as f:
     text = client.audio.transcriptions(model="scribe-v1", file=f.read(), filename="clip.mp3")
 
 # Video (async task — poll until done)
-video = client.video.generate_and_wait(model="veo-3", prompt="a paper plane over a city")
+video = client.video.generate_and_wait(model="minimax-hailuo-02", prompt="a paper plane over a city")
 print(video["result_url"])
 
 # 3D generation (async task — poll, then download the artifact)

@@ -123,14 +123,14 @@ const img = await airforce.images.generate({ model: "image-1", prompt: "a red bi
 
 // Text-to-speech (returns ArrayBuffer)
 const audio = await airforce.audio.speech({
-  model: "eleven-v3",
-  voice: "21m00Tcm4TlvDq8ikWAM",
+  model: "tts-1",
+  voice: "alloy",
   input: "Cleared for takeoff.",
 });
 
 // Video (async — poll or await completion)
 const video = await airforce.video.generateAndWait({
-  model: "veo-3",
+  model: "minimax-hailuo-02",
   prompt: "a paper plane gliding over a city",
 });
 console.log(video.result_url);

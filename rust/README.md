@@ -88,7 +88,7 @@ client.chat().create(json!({
 
 ```rust
 let res = client.embeddings().create(json!({
-    "model": "text-embed-1",
+    "model": "text-embedding-3-small",
     "input": ["first text", "second text"], // string | string[] | tokens
 })).await?;
 println!("{} vectors", res["data"].as_array().unwrap().len());
@@ -102,14 +102,14 @@ let img = client.images().generate(json!({ "model": "image-1", "prompt": "a red 
 
 // Text-to-speech → bytes
 let audio = client.audio().speech(json!({
-    "model": "eleven-v3", "voice": "21m00Tcm4TlvDq8ikWAM", "input": "Cleared for takeoff.",
+    "model": "tts-1", "voice": "alloy", "input": "Cleared for takeoff.",
 })).await?;
 std::fs::write("out.mp3", audio)?;
 
 // Video (async — poll until done)
 use std::time::Duration;
 let video = client.video()
-    .generate_and_wait(json!({ "model": "veo-3", "prompt": "a paper plane over a city" }),
+    .generate_and_wait(json!({ "model": "minimax-hailuo-02", "prompt": "a paper plane over a city" }),
         Duration::from_millis(2500), Duration::from_secs(600)).await?;
 println!("{}", video["result_url"]);
 

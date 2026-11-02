@@ -98,12 +98,12 @@ var img = await client.Images.GenerateAsync(new { model = "image-1", prompt = "a
 // Text-to-speech → bytes
 byte[] audio = await client.Audio.SpeechAsync(new
 {
-    model = "eleven-v3", voice = "21m00Tcm4TlvDq8ikWAM", input = "Cleared for takeoff.",
+    model = "tts-1", voice = "alloy", input = "Cleared for takeoff.",
 });
 await File.WriteAllBytesAsync("out.mp3", audio);
 
 // Video (async — poll until done)
-var video = await client.Video.GenerateAndWaitAsync(new { model = "veo-3", prompt = "a paper plane over a city" });
+var video = await client.Video.GenerateAndWaitAsync(new { model = "minimax-hailuo-02", prompt = "a paper plane over a city" });
 Console.WriteLine(video!["result_url"]!.GetValue<string>());
 
 // 3D (async — poll until done, then download the model file)

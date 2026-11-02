@@ -86,7 +86,7 @@ client.chat().create(Map.of(
 
 ```java
 JsonNode emb = client.embeddings().create(Map.of(
-    "model", "embed-1",
+    "model", "text-embedding-3-small",
     "input", List.of("first text", "second text")));
 JsonNode vector = emb.get("data").get(0).get("embedding");
 ```
@@ -101,12 +101,12 @@ JsonNode img = client.images().generate(Map.of("model", "image-1", "prompt", "a 
 
 // Text-to-speech → bytes
 byte[] audio = client.audio().speech(Map.of(
-    "model", "eleven-v3", "voice", "21m00Tcm4TlvDq8ikWAM", "input", "Cleared for takeoff."));
+    "model", "tts-1", "voice", "alloy", "input", "Cleared for takeoff."));
 Files.write(Path.of("out.mp3"), audio);
 
 // Video (async — poll until done)
 JsonNode video = client.video().generateAndWait(
-    Map.of("model", "veo-3", "prompt", "a paper plane over a city"), 0, 0);
+    Map.of("model", "minimax-hailuo-02", "prompt", "a paper plane over a city"), 0, 0);
 System.out.println(video.get("result_url").asText());
 
 // 3D (async — poll until done, then download the artifact)
